@@ -1,0 +1,17 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "antibody-seq-design"
+version = "0.1.0"
+description = "Minimal adapters-first antibody CDR sequence design pipeline"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["PyYAML>=6.0,<7"]
+
+[project.scripts]
+antibody-design = "antibody_design.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/antibody_design"]

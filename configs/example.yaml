@@ -1,0 +1,55 @@
+run:
+  parent_id: mock-complex
+  input_structure: ../data/examples/mock_complex.pdb
+  output_dir: ../outputs/example_run
+  seed: 101
+
+chains:
+  heavy: H
+  light: L
+  antigen: [A]
+
+residues:
+  designable: [H:2]
+  fixed: [H:1, H:3, L:1, L:2]
+  epitope: [A:1, A:2]
+
+generators:
+  abmpnn:
+    enabled: true
+    num_sequences: 2
+    seed: 101
+    upstream_root: null
+    checkpoint_path: null
+    temperature: 0.1
+    omit_aas: CX
+  igdesign:
+    enabled: true
+    num_sequences: 2
+    seed: 101
+    upstream_root: null
+    lmdesign_checkpoint: null
+    pmpnn_checkpoint: null
+    regions:
+      hcdr3: [H:2]
+    pmpnn_temperature: 0.5
+    output_temperature: 0.5
+
+predictors:
+  protenix:
+    enabled: true
+    num_predictions: 1
+    seed: 101
+    executable: protenix
+    model_name: protenix-v2
+    checkpoint_path: null
+    use_msa: false
+    use_template: false
+  opendde:
+    enabled: true
+    num_predictions: 1
+    seed: 101
+    executable: opendde
+    checkpoint_path: null
+    use_msa: false
+    use_template: false
