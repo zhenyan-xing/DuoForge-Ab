@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -52,8 +54,19 @@ def _list(value: Any, name: str) -> list[Any]:
 
 
 def _resolve(base_dir: Path, value: Any) -> Path:
-    path = Path(str(value)).expanduser()
+    path = Path(_expand_environment(str(value))).expanduser()
     return path.resolve() if path.is_absolute() else (base_dir / path).resolve()
+
+
+def _expand_environment(value: str) -> str:
+    expanded = os.path.expandvars(value)
+    unresolved = re.search(r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))", expanded)
+    if unresolved:
+        name = unresolved.group(1) or unresolved.group(2)
+        raise ConfigError(
+            f"Environment variable {name} is not set; source the generated env.sh first"
+        )
+    return expanded
 
 
 def _residues(values: Any, name: str) -> tuple[ResidueRef, ...]:
@@ -73,6 +86,8 @@ def _model_options(raw: dict[str, Any], base_dir: Path) -> dict[str, Any]:
     for key, value in raw.items():
         if key == "enabled":
             continue
+        if isinstance(value, str):
+            value = _expand_environment(value)
         if value is not None and (key in _PATH_KEYS or key.endswith("_path")):
             options[key] = _resolve(base_dir, value)
         else:
@@ -231,7 +246,7 @@ def load_config(path: str | Path) -> PipelineConfig:
 
     numbering_raw = _mapping(root.get("numbering"), "numbering", {})
     numbering = NumberingConfig(
-        executable=str(numbering_raw.get("executable", "ANARCI")),
+        executable=_expand_environment(str(numbering_raw.get("executable", "ANARCI"))),
         scheme=str(numbering_raw.get("scheme", "imgt")),
     )
     if numbering.scheme != "imgt":

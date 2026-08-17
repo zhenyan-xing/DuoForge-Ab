@@ -6,35 +6,153 @@ DuoForge-Ab is a lightweight, file-and-command orchestrator for this fixed pipel
 
 It implements `de_novo` and `local_redesign`. `full_backbone_de_novo` deliberately fails with `not implemented`; ordinary RFdiffusion is not presented as a framework-free antibody generator.
 
+## Quick start
+
+Requirements: Linux x86-64, an NVIDIA GPU/driver suitable for the pinned CUDA
+runtimes, Git, and one of `mamba`, `micromamba`, or `conda`. A complete local
+installation is not small: keep at least 70 GiB free unless you intentionally
+override the preflight after reading [Disk use](#disk-use).
+
+```bash
+git clone https://github.com/zhenyan-xing/DuoForge-Ab.git
+cd DuoForge-Ab
+
+# 1. Inspect, then install pinned source and isolated environments.
+./setup.sh --dry-run --root /data/duoforge-ab
+./setup.sh --root /data/duoforge-ab
+
+# 2. Inspect, then fetch checkpoints and required common inference files.
+./fetch_assets.sh --dry-run --root /data/duoforge-ab
+./fetch_assets.sh --root /data/duoforge-ab \
+  --protenix-checkpoint /path/to/official/protenix-v2.pt
+
+# 3. Expose the orchestrator and installation root to portable YAML paths.
+source /data/duoforge-ab/env.sh
+
+# 4. Put the real target at data/inputs/target.pdb, edit chains/hotspots in
+#    my_run.yaml, and inspect the complete command plan before using the GPU.
+duoforge-ab validate --config my_run.yaml
+duoforge-ab run --config my_run.yaml --dry-run
+duoforge-ab run --config my_run.yaml --execute
+```
+
+If the official Protenix-v2 CDN works from your region, omit
+`--protenix-checkpoint`; the fetcher will use its pinned official URL. The URL
+returned HTTP 403 during the 2026-08-17 audit and no official alternative mirror
+was available, so the script never substitutes Protenix-v1 or a community copy.
+
+Both scripts are resumable at file/environment granularity. Re-running them
+reuses a checkout only when its exact commit matches, reuses complete assets,
+and leaves `.part` downloads available for HTTP resume. `setup.sh` never fetches
+model weights. `fetch_assets.sh` never installs code or Python packages. Normal
+configuration loading and `duoforge-ab run` never access the network.
+
 ## Current status
 
 The following are runnable without model weights: YAML validation, PDB chain extraction, hotspot expansion, RFantibody-compatible planning, model input construction, output parser fixture tests, and end-to-end `--dry-run`. ANARCI-backed preparation and all four external model adapters have execution paths, explicit asset preflights, subprocess logs, job states, and resume behavior.
 
 Real model inference was not run in this implementation round. In particular, the IgDesign multi-antigen runner, exact-mask AntiFold runner, Protenix-v2 adapter, and OpenDDE-ABAG adapter are source-checked interfaces but remain unverified with real checkpoints. Missing executables, common data, or checkpoints fail explicitly; no normal pipeline path produces mock results or downloads assets.
 
-## Install boundaries
+## Installation layout and isolation
 
-Code and checkpoints are separate, explicit installations.
+The default `standard` profile installs one lightweight orchestration environment
+and five model environments:
 
-1. Install only this lightweight orchestrator:
+| Environment | Fixed upstream runtime | Why it stays separate |
+| --- | --- | --- |
+| `orchestrator` | Python 3.11, PyYAML, NumPy | File/command orchestration only; no model framework. |
+| `rfantibody` | Python 3.10, PyTorch 2.3, CUDA 11.8 | RFantibody's locked RFdiffusion runtime. |
+| `igdesign` | Python 3.11.9, PyTorch 2.0, CUDA 11.8, HMMER, pinned ANARCI source | ANARCI is shared with IgDesign instead of creating a duplicate sixth model environment. |
+| `antifold` | Python 3.10, PyTorch 2.2, CUDA 12.1 | Its PyTorch/PyG ABI differs from RFantibody and IgDesign. |
+| `protenix` | Python 3.11, PyTorch 2.7.1, cuequivariance 0.8 | Official Protenix-v2 requirements. |
+| `opendde` | Python 3.11, PyTorch 2.7.1, cuequivariance 0.10 | The cuequivariance pin conflicts with Protenix, although shared wheels can still be hard-linked. |
 
-   ```bash
-   python -m pip install -e .
-   ```
+All prefixes live under `$DUOFORGE_HOME/envs`, sources under
+`$DUOFORGE_HOME/sources`, and package caches under `$DUOFORGE_HOME/cache`.
+Conda packages and uv wheels use shared caches/hard links on the same filesystem,
+so identical files need not consume another physical copy. Source clones are
+shallow and detached at the revisions in [`models/manifest.yaml`](models/manifest.yaml).
 
-2. Clone/install each upstream at the revision in [`models/manifest.yaml`](models/manifest.yaml), preferably in its named independent conda/mamba environment. The project never edits those checkouts.
-3. Obtain checkpoints and common inference files explicitly from their official distribution channels. Put them at paths you control, then edit the YAML. No checkpoint installer is run by config loading or pipeline execution.
-4. Optionally verify the published OpenDDE-ABAG checksum without modifying the file:
+For development of only the lightweight orchestrator, without a runnable model
+pipeline:
 
-   ```bash
-   python scripts/check_model_assets.py --opendde-checkpoint /path/to/opendde_abag.pt
-   ```
+```bash
+./setup.sh --profile bootstrap --root /data/duoforge-ab
+```
 
-The repository contains no upstream weight, database, or model source copy. RFantibody's `framework: auto` resolves the small `hu-4D5-8_Fv.pdb` preset from the pinned external RFantibody checkout.
+This profile does not clone models or install their environments/weights and is
+therefore not advertised as a complete pipeline installation.
+
+To check a separately obtained OpenDDE-ABAG file without modifying it:
+
+```bash
+python scripts/check_model_assets.py --opendde-checkpoint /path/to/opendde_abag.pt
+```
+
+The Git repository itself contains no upstream source, model weight, or database.
+RFantibody's `framework: auto` resolves the small `hu-4D5-8_Fv.pdb` preset from
+the pinned external checkout.
+
+## Disk use
+
+`GB` means 10^9 bytes; `GiB` means 2^30 bytes. The following source values were
+measured with `du` at the pinned commits on 2026-08-17. They are audit numbers,
+not download quotas.
+
+| Component | Size | Meaning |
+| --- | ---: | --- |
+| Six source trees, excluding `.git` | about 193 MiB | RFantibody 44, IgDesign 3.7, AntiFold 3.0, Protenix 98, OpenDDE 42, ANARCI 2.3 MiB. |
+| Six source trees, including shallow/full local Git metadata measured during audit | about 279 MiB | Source is far below 5 GB and is not the storage problem. |
+| RFdiffusion-Ab checkpoint | 0.450 GiB | Only RFdiffusion is fetched; retired RFantibody ProteinMPNN/RF2/TCR weights are excluded. |
+| IgMPNN checkpoint | 0.006 GiB | Small auxiliary IgDesign checkpoint. |
+| IgDesign LMDesign checkpoint | 10.716 GiB | The largest asset. Metadata inspection found inference `state_dict` and hyperparameters, but no optimizer state that could be safely stripped. |
+| AntiFold checkpoint | 0.528 GiB | Official `model.pt`. |
+| OpenDDE-ABAG checkpoint | 2.445 GiB | Exact published size and SHA-256 are checked. |
+| Protenix-v2 checkpoint | not officially measurable from this region | The official model has 464.44 M parameters; roughly 1.7–2.0 GB is a planning estimate, not a verified file size. |
+| Known checkpoints excluding Protenix-v2 | 14.146 GiB | Exact sum: 15,188,759,772 bytes. |
+| Independent environments after cache/hard-link sharing | roughly 30–45 GiB | Estimate; GPU wheel availability and filesystem hard-link/reflink support affect it. |
+| Complete steady installation | roughly 45–60 GiB | Environments, checkpoints, common data, sources, and modest cache. |
+
+The standard preflight therefore defaults to 70 GiB free. Change it explicitly
+with `--min-free-gib N` or `DUOFORGE_MIN_FREE_GIB=N`; `--skip-disk-check` is
+available when an administrator knows that hard links, reflinks, or external
+mounts make the estimate overly conservative.
+
+Protein-only MSA/template handling remains deliberately light:
+
+- A supplied per-target `.a3m` is normally KB–MB scale; missing chains use
+  query-only A3M rather than triggering a network search.
+- `fetch_assets.sh --with-template-db` explicitly adds only
+  `pdb_seqres_2022_09_28.fasta` (about 220 MB after decompression).
+- The 75 GB NT-RNA, 13 GB RNAcentral, and approximately 220 MB Rfam databases
+  are never fetched because this is an antibody–protein mainline, not an RNA
+  pipeline.
+- Template hit files and required hit mmCIF files must be prepared explicitly
+  before execution. Model adapters preflight them and prevent silent upstream
+  downloads.
+
+## Configure `my_run.yaml`
+
+[`my_run.yaml`](my_run.yaml) is a real `de_novo` starting configuration using
+the paths installed by the two scripts. At minimum edit:
+
+| Parameter | What it means |
+| --- | --- |
+| `run.run_id` | Unique human name used in output metadata. |
+| `input.target_structure` | PDB containing the complete target assembly. |
+| `chains.target` | Every target chain to preserve; do not list H/L here. |
+| `design.loops` | CDRs to redesign (`H1`–`H3`, `L1`–`L3`). |
+| `hotspots` | Required exposed target residues used by RFdiffusion, e.g. `A:100` or `A:102-104`. They are not passed as restraints to co-fold predictors. |
+| `backbone.rfantibody.loop_lengths` | RFdiffusion CDR length/range, e.g. `H3: 5-13`. |
+| `run.seeds` | Explicit random seeds shared by generators and predictors. |
+| `run.samples_per_seed` | `K`; each predictor produces K structures per candidate and seed. |
+
+The complete bilingual parameter-by-parameter reference is in
+[stage contracts](docs/contracts.md#configuration-parameters).
 
 ## Commands
 
-Run from this directory before editable installation by adding `PYTHONPATH=src`:
+Before installation, developers can run from this directory with `PYTHONPATH=src`:
 
 ```bash
 PYTHONPATH=src python -m antibody_design.cli validate --config configs/example.yaml

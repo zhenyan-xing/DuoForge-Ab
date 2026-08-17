@@ -1,0 +1,86 @@
+# Real de_novo starting point. Edit every value marked EDIT. Paths under
+# ${DUOFORGE_HOME} are filled by `source "$DUOFORGE_HOME/env.sh"`.
+
+run:
+  run_id: my_h3_design                       # EDIT: unique output/run name
+  output_dir: outputs/my_h3_design
+  seeds: [101]
+  samples_per_seed: 5                       # 5 structures/model/candidate
+  save_confidence_arrays: none              # none | top1 | all
+
+mode: de_novo
+input:
+  target_structure: data/inputs/target.pdb  # EDIT: target-only or complex PDB
+  framework: auto                           # pinned hu-4D5-8_Fv framework preset
+
+chains:
+  heavy: H
+  light: L
+  target: [A]                               # EDIT: retain every target chain
+
+design:
+  loops: [H3]
+  residues: []                              # optional exact author IDs, e.g. H:100A
+  fixed_residues: []                        # subtract from loops/residues
+
+hotspots: [A:100, A:102-104]                # EDIT: real exposed target residues
+
+numbering:
+  executable: ${DUOFORGE_HOME}/envs/igdesign/bin/ANARCI
+  scheme: imgt
+
+backbone:
+  rfantibody:
+    executable: ${DUOFORGE_HOME}/envs/rfantibody/bin/rfdiffusion
+    qvextract_executable: ${DUOFORGE_HOME}/envs/rfantibody/bin/qvextract
+    upstream_root: ${DUOFORGE_HOME}/sources/RFantibody
+    checkpoint_path: ${DUOFORGE_HOME}/checkpoints/rfantibody/RFdiffusion_Ab.pt
+    num_designs: 2
+    loop_lengths: {H3: 5-13}
+    diffuser_t: 50
+    final_step: 1
+    deterministic: true
+    cautious: true
+    no_trajectory: true
+
+generators:
+  igdesign:
+    enabled: true
+    upstream_root: ${DUOFORGE_HOME}/sources/igdesign
+    python_executable: ${DUOFORGE_HOME}/envs/igdesign/bin/python
+    lmdesign_checkpoint: ${DUOFORGE_HOME}/checkpoints/igdesign/igdesign_acvr2b_holdout.ckpt
+    pmpnn_checkpoint: ${DUOFORGE_HOME}/checkpoints/igdesign/igmpnn_acvr2b_holdout.ckpt
+    proposal_budget: 10
+    pmpnn_temperature: 0.5
+    output_temperature: 0.5
+  antifold:
+    enabled: true
+    upstream_root: ${DUOFORGE_HOME}/sources/AntiFold
+    python_executable: ${DUOFORGE_HOME}/envs/antifold/bin/python
+    checkpoint_path: ${DUOFORGE_HOME}/checkpoints/antifold/model.pt
+    proposal_budget: 10
+    temperature: 0.2
+
+predictors:
+  protenix:
+    enabled: true
+    executable: ${DUOFORGE_HOME}/envs/protenix/bin/protenix
+    runtime_root: ${DUOFORGE_HOME}/runtime/protenix
+    checkpoint_path: ${DUOFORGE_HOME}/runtime/protenix/checkpoint/protenix-v2.pt
+    model_name: protenix-v2
+  opendde:
+    enabled: true
+    executable: ${DUOFORGE_HOME}/envs/opendde/bin/opendde
+    runtime_root: ${DUOFORGE_HOME}/runtime/opendde
+    checkpoint_path: ${DUOFORGE_HOME}/runtime/opendde/checkpoint/opendde_abag.pt
+    model_name: opendde_v1
+
+msa:
+  mode: target_only                         # target-only unpaired MSA; H/L query-only
+  unpaired: {}
+  # To use a precomputed target MSA instead:
+  # unpaired: {A: data/inputs/target_A.a3m}
+
+templates:
+  target_hits: {}
+  antibody_hits: {}

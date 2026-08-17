@@ -7,7 +7,8 @@ models:
     environment: duoforge-rfantibody
     executable: rfdiffusion
     checkpoints: [RFdiffusion_Ab.pt]
-    checkpoint_source: null
+    checkpoint_source: https://files.ipd.uw.edu/pub/RFantibody/RFdiffusion_Ab.pt
+    checkpoint_size_bytes: 483452922
     checksum: null
   igdesign:
     repository: https://github.com/AbSciBio/igdesign
@@ -15,8 +16,13 @@ models:
     license: MIT
     environment: duoforge-igdesign
     executable: python
-    checkpoints: [igdesign.ckpt, igmpnn.ckpt]
-    checkpoint_source: null
+    checkpoints: [igdesign_acvr2b_holdout.ckpt, igmpnn_acvr2b_holdout.ckpt]
+    checkpoint_sources:
+      igdesign_acvr2b_holdout.ckpt: https://absci-prod-ai-public-data.s3.us-west-2.amazonaws.com/igdesign_acvr2b_holdout.ckpt
+      igmpnn_acvr2b_holdout.ckpt: https://absci-prod-ai-public-data.s3.us-west-2.amazonaws.com/igmpnn_acvr2b_holdout.ckpt
+    checkpoint_sizes_bytes:
+      igdesign_acvr2b_holdout.ckpt: 11506422598
+      igmpnn_acvr2b_holdout.ckpt: 6774680
     checksum: null
   antifold:
     repository: https://github.com/oxpig/AntiFold
@@ -26,6 +32,7 @@ models:
     executable: python
     checkpoints: [model.pt]
     checkpoint_source: https://opig.stats.ox.ac.uk/data/downloads/AntiFold/models/model.pt
+    checkpoint_size_bytes: 566838063
     checksum: null
   protenix:
     repository: https://github.com/bytedance/Protenix
@@ -36,7 +43,9 @@ models:
     executable: protenix
     model_name: protenix-v2
     checkpoints: [protenix-v2.pt]
-    checkpoint_source: null
+    checkpoint_source: https://protenix.tos-cn-beijing.volces.com/checkpoint/protenix-v2.pt
+    checkpoint_size_bytes: null
+    checkpoint_access_note: The official CDN returned HTTP 403 during the 2026-08-17 audit; no unofficial mirror or v1 substitute is used.
     checksum: null
   opendde:
     repository: https://github.com/aurekaresearch/OpenDDE
@@ -46,7 +55,7 @@ models:
     executable: opendde
     model_name: opendde_v1
     checkpoints: [opendde_abag.pt]
-    checkpoint_source: https://huggingface.co/aurekaresearch/OpenDDE
+    checkpoint_source: https://huggingface.co/aurekaresearch/OpenDDE/resolve/eddd563ce96571f784012edd8f045181c8f8627d/opendde_abag.pt
     checkpoint_revision: eddd563ce96571f784012edd8f045181c8f8627d
     checkpoint_size_bytes: 2625271509
     checksum:
@@ -56,9 +65,10 @@ models:
     repository: https://github.com/oxpig/ANARCI
     revision: 79f6c575056dedef86cb8f405ebb039197923eec
     license: BSD-3-Clause
-    environment: duoforge-anarci
+    environment: duoforge-igdesign
     executable: ANARCI
     checkpoints: []
+    install_note: Built from the pinned source inside the IgDesign environment so HMMER and ANARCI are not duplicated in a sixth environment.
 optional:
   abmpnn:
     status: adapter-boundary-only

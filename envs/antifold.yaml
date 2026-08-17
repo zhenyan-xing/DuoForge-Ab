@@ -1,0 +1,20 @@
+channels:
+  - pytorch
+  - nvidia
+  - pyg
+  - conda-forge
+dependencies:
+  - pip
+  - python=3.10
+  - pytorch::pytorch=2.2
+  - pytorch::torchvision
+  - pytorch::torchaudio
+  - pytorch::pytorch-cuda=12.1
+  - pyg::pytorch-scatter
+  - pip:
+      - torch_geometric==2.4.0
+      - biopython==1.83
+      - biotite==0.38
+      - pygam==0.9.*
+      - numpy==1.26.*
+      - pandas==2.*

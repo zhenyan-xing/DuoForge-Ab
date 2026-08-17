@@ -1,6 +1,8 @@
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from antibody_design.config import ConfigError, load_config
 
@@ -113,6 +115,49 @@ class ConfigTest(unittest.TestCase):
 
             with self.assertRaisesRegex(ConfigError, "not implemented"):
                 load_config(path)
+
+    def test_expands_duoforge_home_in_paths_and_executables(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            install_root = root / "duoforge-home"
+            path = write_config(root, "de_novo")
+            text = path.read_text(encoding="utf-8")
+            text = text.replace(
+                "upstream_root: /opt/RFantibody",
+                "upstream_root: ${DUOFORGE_HOME}/sources/RFantibody",
+            ).replace(
+                "executable: ANARCI",
+                "executable: ${DUOFORGE_HOME}/envs/igdesign/bin/ANARCI",
+            )
+            path.write_text(text, encoding="utf-8")
+
+            with patch.dict(os.environ, {"DUOFORGE_HOME": str(install_root)}):
+                config = load_config(path)
+
+            self.assertEqual(
+                config.backbone.options["upstream_root"],
+                install_root / "sources" / "RFantibody",
+            )
+            self.assertEqual(
+                config.numbering.executable,
+                str(install_root / "envs" / "igdesign" / "bin" / "ANARCI"),
+            )
+
+    def test_unset_environment_variable_fails_with_clear_message(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = write_config(root, "de_novo")
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(
+                    "upstream_root: /opt/RFantibody",
+                    "upstream_root: ${DUOFORGE_HOME}/sources/RFantibody",
+                ),
+                encoding="utf-8",
+            )
+
+            with patch.dict(os.environ, {}, clear=True):
+                with self.assertRaisesRegex(ConfigError, "DUOFORGE_HOME"):
+                    load_config(path)
 
 
 if __name__ == "__main__":
