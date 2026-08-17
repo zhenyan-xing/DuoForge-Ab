@@ -1,55 +1,81 @@
 run:
-  parent_id: mock-complex
-  input_structure: ../data/examples/mock_complex.pdb
+  run_id: example_de_novo
   output_dir: ../outputs/example_run
-  seed: 101
+  seeds: [101]
+  samples_per_seed: 5
+  save_confidence_arrays: none
+
+mode: de_novo
+input:
+  # Synthetic test PDB: it contains H/L/A only to make validate and dry-run local.
+  target_structure: ../data/examples/mock_complex.pdb
+  framework: ../data/examples/mock_complex.pdb
 
 chains:
   heavy: H
   light: L
-  antigen: [A]
+  target: [A]
 
-residues:
-  designable: [H:2]
-  fixed: [H:1, H:3, L:1, L:2]
-  epitope: [A:1, A:2]
+design:
+  loops: [H1]
+  residues: [H:2]
+  fixed_residues: [H:3]
+
+hotspots: [A:1]
+
+numbering:
+  executable: ANARCI
+  scheme: imgt
+
+backbone:
+  rfantibody:
+    executable: rfdiffusion
+    upstream_root: /opt/duoforge/RFantibody
+    checkpoint_path: /opt/duoforge/checkpoints/rfantibody/RFdiffusion_Ab.pt
+    num_designs: 2
+    loop_lengths: {H1: ""}
+    diffuser_t: 50
+    final_step: 1
+    deterministic: true
+    cautious: true
+    no_trajectory: true
 
 generators:
-  abmpnn:
-    enabled: true
-    num_sequences: 2
-    seed: 101
-    upstream_root: null
-    checkpoint_path: null
-    temperature: 0.1
-    omit_aas: CX
   igdesign:
     enabled: true
-    num_sequences: 2
-    seed: 101
-    upstream_root: null
-    lmdesign_checkpoint: null
-    pmpnn_checkpoint: null
-    regions:
-      hcdr3: [H:2]
+    upstream_root: /opt/duoforge/igdesign
+    python_executable: /opt/duoforge/envs/igdesign/bin/python
+    lmdesign_checkpoint: /opt/duoforge/checkpoints/igdesign/igdesign.ckpt
+    pmpnn_checkpoint: /opt/duoforge/checkpoints/igdesign/igmpnn.ckpt
+    proposal_budget: 10
     pmpnn_temperature: 0.5
     output_temperature: 0.5
+  antifold:
+    enabled: true
+    upstream_root: /opt/duoforge/AntiFold
+    python_executable: /opt/duoforge/envs/antifold/bin/python
+    checkpoint_path: /opt/duoforge/checkpoints/antifold/model.pt
+    proposal_budget: 10
+    temperature: 0.2
 
 predictors:
   protenix:
     enabled: true
-    num_predictions: 1
-    seed: 101
-    executable: protenix
+    executable: /opt/duoforge/envs/protenix/bin/protenix
+    runtime_root: /opt/duoforge/runtime/protenix
+    checkpoint_path: /opt/duoforge/runtime/protenix/checkpoint/protenix-v2.pt
     model_name: protenix-v2
-    checkpoint_path: null
-    use_msa: false
-    use_template: false
   opendde:
     enabled: true
-    num_predictions: 1
-    seed: 101
-    executable: opendde
-    checkpoint_path: null
-    use_msa: false
-    use_template: false
+    executable: /opt/duoforge/envs/opendde/bin/opendde
+    runtime_root: /opt/duoforge/runtime/opendde
+    checkpoint_path: /opt/duoforge/runtime/opendde/checkpoint/opendde_abag.pt
+    model_name: opendde_v1
+
+msa:
+  mode: target_only
+  unpaired: {}
+
+templates:
+  target_hits: {}
+  antibody_hits: {}

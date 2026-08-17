@@ -1,0 +1,71 @@
+schema_version: 1
+models:
+  rfantibody:
+    repository: https://github.com/RosettaCommons/RFantibody
+    revision: 8fe311415754e0276d1a39c87c57e69c88927a2d
+    license: MIT
+    environment: duoforge-rfantibody
+    executable: rfdiffusion
+    checkpoints: [RFdiffusion_Ab.pt]
+    checkpoint_source: null
+    checksum: null
+  igdesign:
+    repository: https://github.com/AbSciBio/igdesign
+    revision: 70431eef0afaf0496d7d84e22dfdc1980ec9e70e
+    license: MIT
+    environment: duoforge-igdesign
+    executable: python
+    checkpoints: [igdesign.ckpt, igmpnn.ckpt]
+    checkpoint_source: null
+    checksum: null
+  antifold:
+    repository: https://github.com/oxpig/AntiFold
+    revision: 789d46786624c01eb44f177ef4c0deeeb6e77469
+    license: BSD-3-Clause
+    environment: duoforge-antifold
+    executable: python
+    checkpoints: [model.pt]
+    checkpoint_source: https://opig.stats.ox.ac.uk/data/downloads/AntiFold/models/model.pt
+    checksum: null
+  protenix:
+    repository: https://github.com/bytedance/Protenix
+    revision: 2475421477ab414b571149ad4a875c390ff8a35d
+    tag: v2.0.0
+    license: Apache-2.0
+    environment: duoforge-protenix
+    executable: protenix
+    model_name: protenix-v2
+    checkpoints: [protenix-v2.pt]
+    checkpoint_source: null
+    checksum: null
+  opendde:
+    repository: https://github.com/aurekaresearch/OpenDDE
+    revision: 5028caae7f4a3c36b7eee848cab84c4c05492204
+    license: Apache-2.0
+    environment: duoforge-opendde
+    executable: opendde
+    model_name: opendde_v1
+    checkpoints: [opendde_abag.pt]
+    checkpoint_source: https://huggingface.co/aurekaresearch/OpenDDE
+    checkpoint_revision: eddd563ce96571f784012edd8f045181c8f8627d
+    checkpoint_size_bytes: 2625271509
+    checksum:
+      algorithm: sha256
+      value: 5cf37441ddef2a2f148b81dd4a218ad274f996fecaf17dec901ab6cf1351713d
+  anarci:
+    repository: https://github.com/oxpig/ANARCI
+    revision: 79f6c575056dedef86cb8f405ebb039197923eec
+    license: BSD-3-Clause
+    environment: duoforge-anarci
+    executable: ANARCI
+    checkpoints: []
+optional:
+  abmpnn:
+    status: adapter-boundary-only
+    checkpoint_identity: unresolved
+  antibmpnn:
+    repository: https://github.com/zeysun/AntiBMPNN
+    revision: 7e6329ba3c317e7344c6b09add72dea2390af39a
+    status: capability-placeholder
+  full_backbone_de_novo:
+    status: not-implemented

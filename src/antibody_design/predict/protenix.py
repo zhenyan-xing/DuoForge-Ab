@@ -1,11 +1,25 @@
 from __future__ import annotations
 
+import os
 import shutil
+import subprocess
 from pathlib import Path
 
-from antibody_design.design.base import AdapterPlan, ExternalCommand
+from antibody_design.design.base import AdapterNotReadyError, AdapterPlan, ExternalCommand
 
-from .base import PredictionRequest, StructurePredictor
+from .base import ParsedPrediction, PredictionRequest, StructurePredictor
+from .io import missing_prediction_assets, parse_prediction_outputs
+
+
+PROTENIX_RELEASE = "v2.0.0"
+PROTENIX_COMMIT = "2475421477ab414b571149ad4a875c390ff8a35d"
+_COMMON_FILES = (
+    "components.cif",
+    "components.cif.rdkit_mol.pkl",
+    "obsolete_release_date.csv",
+    "clusters-by-entity-40.txt",
+)
+_TEMPLATE_FILES = ("release_date_cache.json", "obsolete_to_successor.json")
 
 
 class ProtenixAdapter(StructurePredictor):
@@ -13,46 +27,93 @@ class ProtenixAdapter(StructurePredictor):
 
     def plan(self, request: PredictionRequest) -> AdapterPlan:
         executable = str(request.options.get("executable", "protenix"))
-        checkpoint_value = request.options.get("checkpoint_path")
-        checkpoint = Path(checkpoint_value) if checkpoint_value else Path("{protenix_v2_ckpt}")
-        input_path = request.input_path or Path("{candidate_input_json}")
+        runtime_value = request.options.get("runtime_root")
+        runtime = Path(runtime_value) if runtime_value else Path("{protenix_runtime_root}")
+        checkpoint = Path(
+            request.options.get("checkpoint_path", runtime / "checkpoint/protenix-v2.pt")
+        )
+        model_name = str(request.options.get("model_name", "protenix-v2"))
+        use_msa = bool(request.options.get("use_msa", True))
+        use_template = bool(request.options.get("use_template", False))
         missing: list[str] = []
         if shutil.which(executable) is None:
-            missing.append("Protenix executable")
-        if not checkpoint_value or not checkpoint.is_file():
-            missing.append("existing checkpoint_path (prevents automatic download)")
-        output_dir = request.output_dir / request.candidate.candidate_id
+            missing.append(f"Protenix executable: {executable}")
+        if model_name != "protenix-v2":
+            missing.append("official model_name must be protenix-v2")
+        if not runtime_value:
+            missing.append("runtime_root")
+        if not checkpoint.is_file():
+            missing.append(f"explicit Protenix-v2 checkpoint: {checkpoint}")
+        official_checkpoint = runtime / "checkpoint/protenix-v2.pt"
+        if checkpoint.resolve() != official_checkpoint.resolve():
+            missing.append(
+                f"v2.0.0 CLI resolves checkpoint via PROTENIX_ROOT_DIR; checkpoint_path must be {official_checkpoint}"
+            )
+        for filename in (*_COMMON_FILES, *(_TEMPLATE_FILES if use_template else ())):
+            path = runtime / "common" / filename
+            if not path.is_file():
+                missing.append(f"preinstalled Protenix cache file: {path}")
+        missing.extend(
+            missing_prediction_assets(
+                request.input_path, use_msa, use_template, runtime / "mmcif"
+            )
+        )
+
+        output_dir = request.output_dir / request.candidate.candidate_id / f"seed_{request.seed}"
+        confidence_policy = str(request.options.get("save_confidence_arrays", "none"))
+        need_arrays = confidence_policy == "all"
+        if confidence_policy == "top1":
+            missing.append(
+                "save_confidence_arrays=top1 is reserved but not safely supported by the job-level upstream flag"
+            )
         command = ExternalCommand(
             argv=(
-                executable,
-                "pred",
-                "-i",
-                str(input_path),
-                "-o",
-                str(output_dir),
-                "-s",
-                str(request.seed),
-                "-n",
-                str(request.options.get("model_name", "protenix-v2")),
-                "--load_checkpoint_path",
-                str(checkpoint),
-                "--use_msa",
-                str(request.options.get("use_msa", False)).lower(),
-                "--use_template",
-                str(request.options.get("use_template", False)).lower(),
-                "--use_default_params",
-                "true",
+                executable, "pred",
+                "-i", str(request.input_path),
+                "-o", str(request.output_dir),
+                "-s", str(request.seed),
+                "-e", str(request.samples_per_seed),
+                "-n", "protenix-v2",
+                "--use_msa", str(use_msa).lower(),
+                "--use_template", str(use_template).lower(),
+                "--use_rna_msa", "false",
+                "--use_seeds_in_json", "false",
+                "--need_atom_confidence", str(need_arrays).lower(),
             ),
+            env={"PROTENIX_ROOT_DIR": str(runtime)},
             ready=not missing,
             missing=tuple(missing),
         )
         return AdapterPlan(
-            stage="predict",
+            stage="fold",
             adapter=self.name,
             commands=(command,),
             expected_outputs=(str(output_dir),),
             notes=(
-                "The candidate input is an AlphaFold3-style sequence-complex JSON.",
-                "Execution and metric parsing are intentionally not implemented in v0.1.",
+                f"Official Protenix {PROTENIX_RELEASE} is pinned to commit {PROTENIX_COMMIT}.",
+                "The fixed CLI has no load_checkpoint_path flag; PROTENIX_ROOT_DIR selects the explicitly preflighted checkpoint.",
+                "No hotspot, epitope, contact restraint, or RFdiffusion pose is supplied.",
             ),
+            metadata={
+                "input_path": request.input_path,
+                "runtime_root": runtime,
+                "checkpoint_path": checkpoint,
+                "source_commit": PROTENIX_COMMIT,
+            },
         )
+
+    def parse_outputs(self, output_root: Path, job_name: str, seed: int) -> list[ParsedPrediction]:
+        return parse_prediction_outputs(output_root, job_name, seed, self.name)
+
+    def predict(self, request: PredictionRequest) -> list[ParsedPrediction]:
+        plan = self.plan(request)
+        command = plan.commands[0]
+        if not command.ready:
+            raise AdapterNotReadyError("Protenix is not ready: " + "; ".join(command.missing))
+        Path(plan.expected_outputs[0]).mkdir(parents=True, exist_ok=True)
+        environment = os.environ.copy()
+        environment.update(command.env)
+        completed = subprocess.run(command.argv, env=environment, check=False)
+        if completed.returncode != 0:
+            raise AdapterNotReadyError(f"Protenix failed with exit code {completed.returncode}")
+        return self.parse_outputs(request.output_dir, request.candidate.candidate_id, request.seed)

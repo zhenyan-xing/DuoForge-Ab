@@ -4,10 +4,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
 
-from antibody_design.schemas import PreparedComplex
+from antibody_design.schemas import Parent
 
 
 class AdapterNotReadyError(RuntimeError):
+    pass
+
+
+class CapabilityError(ValueError):
     pass
 
 
@@ -15,6 +19,7 @@ class AdapterNotReadyError(RuntimeError):
 class ExternalCommand:
     argv: tuple[str, ...]
     cwd: Path | None = None
+    env: Mapping[str, str] = field(default_factory=dict)
     ready: bool = False
     missing: tuple[str, ...] = ()
 
@@ -22,6 +27,7 @@ class ExternalCommand:
         return {
             "argv": list(self.argv),
             "cwd": str(self.cwd) if self.cwd else None,
+            "env": dict(self.env),
             "ready": self.ready,
             "missing": list(self.missing),
         }
@@ -34,6 +40,7 @@ class AdapterPlan:
     commands: tuple[ExternalCommand, ...]
     expected_outputs: tuple[str, ...]
     notes: tuple[str, ...] = ()
+    metadata: Mapping[str, Any] = field(default_factory=dict)
     dry_run: bool = True
 
     def to_dict(self) -> dict[str, Any]:
@@ -44,24 +51,35 @@ class AdapterPlan:
             "commands": [command.to_dict() for command in self.commands],
             "expected_outputs": list(self.expected_outputs),
             "notes": list(self.notes),
+            "metadata": {
+                key: str(value) if isinstance(value, Path) else value
+                for key, value in self.metadata.items()
+            },
         }
 
 
 @dataclass(frozen=True)
 class DesignRequest:
-    prepared: PreparedComplex
+    parent: Parent
     prepared_dir: Path
     output_dir: Path
-    num_sequences: int
-    seed: int
+    seeds: tuple[int, ...]
+    unique_per_generator: int
+    proposal_budget: int
     options: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
-class GeneratedSequence:
+class SequenceProposal:
     heavy_sequence: str
     light_sequence: str
+    seed: int
+    sample_index: int
     raw_metrics: Mapping[str, Any] = field(default_factory=dict)
+    designed_positions: tuple[str, ...] = ()
+
+
+GeneratedSequence = SequenceProposal
 
 
 class SequenceDesigner:
@@ -70,7 +88,7 @@ class SequenceDesigner:
     def plan(self, request: DesignRequest) -> AdapterPlan:
         raise AdapterNotReadyError(f"{self.name} does not implement dry-run planning")
 
-    def generate(self, request: DesignRequest) -> list[GeneratedSequence]:
+    def generate(self, request: DesignRequest) -> list[SequenceProposal]:
         raise AdapterNotReadyError(
-            f"{self.name} execution is not implemented; use dry-run or a mock adapter"
+            f"{self.name} execution is unavailable; install its pinned code and checkpoint"
         )

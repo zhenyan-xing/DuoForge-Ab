@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import re
-from dataclasses import replace
+from collections.abc import Mapping
 
-from antibody_design.design.base import GeneratedSequence
-from antibody_design.schemas import Candidate, PreparedComplex, ResidueRef
+from antibody_design.design.base import SequenceProposal
+from antibody_design.schemas import Candidate, GenerationRecord, Parent
 
 
 class CandidateError(ValueError):
@@ -13,100 +14,132 @@ class CandidateError(ValueError):
 
 _ALPHABET = set("ACDEFGHIKLMNPQRSTVWY")
 _N_GLYC = re.compile(r"N[^P][ST]")
+_DEGRADATION = re.compile(r"(?:N[GST]|D[GSTP])")
+_REPEAT = re.compile(r"(.)\1{3,}")
+_HYDROPHOBIC = set("AILMFWVY")
+_CHARGED = set("DEKR")
 
 
-def _mutation_refs(
-    prepared: PreparedComplex, heavy_sequence: str, light_sequence: str
-) -> tuple[ResidueRef, ...]:
-    mutations: list[ResidueRef] = []
-    chain_pairs = (
-        (prepared.chains.heavy, prepared.heavy_sequence, heavy_sequence),
-        (prepared.chains.light, prepared.light_sequence, light_sequence),
-    )
-    for chain_id, parent, candidate in chain_pairs:
-        if len(parent) != len(candidate):
-            raise CandidateError(f"Candidate changes {chain_id} chain length")
-        residues = prepared.residues_by_chain[chain_id]
-        mutations.extend(
-            residues[index].ref
-            for index, (before, after) in enumerate(zip(parent, candidate))
-            if before != after
-        )
+def _stable_id(prefix: str, *parts: object, length: int = 14) -> str:
+    digest = hashlib.sha256("\0".join(str(part) for part in parts).encode()).hexdigest()
+    return f"{prefix}-{digest[:length]}"
+
+
+def _chain_mutations(parent: Parent, heavy: str, light: str) -> tuple[str, ...]:
+    if len(heavy) != len(parent.heavy_sequence):
+        raise CandidateError("Candidate changes heavy-chain length in fixed-backbone mode")
+    if len(light) != len(parent.light_sequence):
+        raise CandidateError("Candidate changes light-chain length in fixed-backbone mode")
+    mutations: list[str] = []
+    for chain, before, after in (
+        (parent.heavy_chain, parent.heavy_sequence, heavy),
+        (parent.light_chain, parent.light_sequence, light),
+    ):
+        inverse = {
+            index: ref
+            for ref, index in parent.sequence_index_by_author.items()
+            if ref.startswith(f"{chain}:")
+        }
+        for index, (old, new) in enumerate(zip(before, after)):
+            if old != new:
+                mutations.append(inverse.get(index, f"{chain}:{index + 1}"))
     return tuple(mutations)
 
 
-def _new_motif_starts(parent: str, candidate: str) -> set[int]:
-    return {match.start() for match in _N_GLYC.finditer(candidate)}.difference(
-        match.start() for match in _N_GLYC.finditer(parent)
-    )
+def chemistry_liabilities(parent: Parent, heavy: str, light: str) -> tuple[str, ...]:
+    """Report chemistry motifs; these annotations never filter candidates."""
 
-
-def _liabilities(prepared: PreparedComplex, heavy: str, light: str) -> tuple[str, ...]:
     findings: list[str] = []
-    for chain_id, parent, candidate in (
-        (prepared.chains.heavy, prepared.heavy_sequence, heavy),
-        (prepared.chains.light, prepared.light_sequence, light),
+    for chain, before, after in (
+        (parent.heavy_chain, parent.heavy_sequence, heavy),
+        (parent.light_chain, parent.light_sequence, light),
     ):
-        for index in sorted(_new_motif_starts(parent, candidate)):
-            findings.append(f"new_n_glycosylation:{chain_id}:{index + 1}")
-        if candidate.count("C") > parent.count("C"):
-            findings.append(f"new_cysteine:{chain_id}")
-    return tuple(findings)
+        if after.count("C") > before.count("C"):
+            findings.append(f"new_cysteine:{chain}")
+        for match in _N_GLYC.finditer(after):
+            findings.append(f"n_x_s_t:{chain}:{match.start() + 1}")
+        for match in _DEGRADATION.finditer(after):
+            findings.append(f"asn_asp_degradation:{chain}:{match.start() + 1}")
+        for index, residue in enumerate(after):
+            if residue in {"M", "W"}:
+                findings.append(f"oxidation_residue:{chain}:{index + 1}:{residue}")
+        for match in _REPEAT.finditer(after):
+            findings.append(f"homopolymer:{chain}:{match.start() + 1}:{match.group(0)}")
+        for index in range(max(0, len(after) - 6)):
+            window = after[index : index + 7]
+            if sum(aa in _HYDROPHOBIC for aa in window) >= 6:
+                findings.append(f"hydrophobic_window:{chain}:{index + 1}")
+            if sum(aa in _CHARGED for aa in window) >= 6:
+                findings.append(f"charged_window:{chain}:{index + 1}")
+    return tuple(dict.fromkeys(findings))
 
 
-def normalize_candidates(
-    prepared: PreparedComplex,
-    generator: str,
-    seed: int,
-    generated: list[GeneratedSequence],
-) -> list[Candidate]:
-    """Normalize and de-duplicate exact sequences within one generator source."""
+def merge_generation_proposals(
+    parent: Parent,
+    proposals_by_generator: Mapping[str, list[SequenceProposal]],
+    unique_per_generator: int,
+) -> tuple[list[Candidate], list[GenerationRecord], dict[str, int]]:
+    """Select K unique sequences per generator, then merge across generators."""
 
-    allowed_positions = set(prepared.designable_positions)
-    seen: set[tuple[str, str]] = set()
-    candidates: list[Candidate] = []
-    for item in generated:
-        heavy = item.heavy_sequence.upper()
-        light = item.light_sequence.upper()
-        invalid = set(heavy + light).difference(_ALPHABET)
-        if invalid:
-            raise CandidateError(f"Candidate contains unsupported amino acids: {sorted(invalid)}")
-        key = (heavy, light)
-        if key in seen:
-            continue
-        mutations = _mutation_refs(prepared, heavy, light)
-        outside_mask = set(mutations).difference(allowed_positions)
-        if outside_mask:
-            refs = ", ".join(sorted(str(ref) for ref in outside_mask))
-            raise CandidateError(f"Candidate mutates residues outside design mask: {refs}")
-        seen.add(key)
-        candidates.append(
-            Candidate(
-                candidate_id=(
-                    f"{prepared.parent_id}__{generator}__s{seed}__{len(candidates) + 1:04d}"
-                ),
-                parent_id=prepared.parent_id,
-                generator=generator,
-                heavy_sequence=heavy,
-                light_sequence=light,
-                designed_positions=tuple(str(ref) for ref in prepared.designable_positions),
-                mutation_count=len(mutations),
-                sequence_cluster="",
-                seed=seed,
-                generation_metrics=dict(item.raw_metrics),
-                liabilities=_liabilities(prepared, heavy, light),
+    candidates_by_key: dict[tuple[str, str, str], Candidate] = {}
+    generations: list[GenerationRecord] = []
+    shortfalls: dict[str, int] = {}
+    allowed = set(parent.designable_positions)
+
+    for generator, proposals in proposals_by_generator.items():
+        seen_for_generator: set[tuple[str, str]] = set()
+        for proposal in proposals:
+            heavy = proposal.heavy_sequence.upper()
+            light = proposal.light_sequence.upper()
+            invalid = set(heavy + light).difference(_ALPHABET)
+            if invalid:
+                raise CandidateError(
+                    f"{generator} proposal contains unsupported residues: {sorted(invalid)}"
+                )
+            sequence_key = (heavy, light)
+            if sequence_key in seen_for_generator:
+                continue
+            mutations = _chain_mutations(parent, heavy, light)
+            outside = set(mutations).difference(allowed)
+            if outside:
+                refs = ", ".join(sorted(outside))
+                raise CandidateError(f"Candidate mutates residues outside design mask: {refs}")
+
+            seen_for_generator.add(sequence_key)
+            key = (parent.parent_id, heavy, light)
+            candidate = candidates_by_key.get(key)
+            if candidate is None:
+                candidate_id = _stable_id("cand", *key)
+                candidate = Candidate(
+                    candidate_id=candidate_id,
+                    parent_id=parent.parent_id,
+                    heavy_sequence=heavy,
+                    light_sequence=light,
+                    designed_positions=parent.designable_positions,
+                    mutation_count=len(mutations),
+                    sequence_cluster=_stable_id("exact", heavy, light, length=10),
+                    liabilities=chemistry_liabilities(parent, heavy, light),
+                )
+                candidates_by_key[key] = candidate
+            generations.append(
+                GenerationRecord(
+                    generation_id=_stable_id(
+                        "gen", parent.parent_id, generator, proposal.seed, proposal.sample_index
+                    ),
+                    candidate_id=candidate.candidate_id,
+                    parent_id=parent.parent_id,
+                    generator=generator,
+                    seed=proposal.seed,
+                    sample_index=proposal.sample_index,
+                    raw_metrics=dict(proposal.raw_metrics),
+                    designed_positions=(
+                        proposal.designed_positions or parent.designable_positions
+                    ),
+                )
             )
-        )
-    return candidates
+            if len(seen_for_generator) == unique_per_generator:
+                break
+        if len(seen_for_generator) < unique_per_generator:
+            shortfalls[generator] = unique_per_generator - len(seen_for_generator)
 
-
-def assign_sequence_clusters(candidates: list[Candidate]) -> list[Candidate]:
-    """Assign stable exact-sequence clusters without merging generator provenance."""
-
-    clusters: dict[tuple[str, str], str] = {}
-    assigned: list[Candidate] = []
-    for candidate in candidates:
-        key = (candidate.heavy_sequence, candidate.light_sequence)
-        cluster = clusters.setdefault(key, f"exact-{len(clusters) + 1:04d}")
-        assigned.append(replace(candidate, sequence_cluster=cluster))
-    return assigned
+    return list(candidates_by_key.values()), generations, shortfalls

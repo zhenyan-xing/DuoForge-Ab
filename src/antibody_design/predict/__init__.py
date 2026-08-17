@@ -1,3 +1,12 @@
-from .base import PredictionRequest, PredictionResult, StructurePredictor
+from .base import ParsedPrediction, PredictionRequest, PredictionResult, StructurePredictor
+from .opendde import OpenDDEAdapter
+from .protenix import ProtenixAdapter
 
-__all__ = ["PredictionRequest", "PredictionResult", "StructurePredictor"]
+__all__ = [
+    "OpenDDEAdapter",
+    "ParsedPrediction",
+    "PredictionRequest",
+    "PredictionResult",
+    "ProtenixAdapter",
+    "StructurePredictor",
+]

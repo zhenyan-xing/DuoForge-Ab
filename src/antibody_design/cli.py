@@ -6,29 +6,34 @@ from pathlib import Path
 
 from .config import load_config
 from .pipeline import DesignPipeline
-from .prepare import prepare_complex, write_prepared_complex
+from .prepare import PreparationError, expand_hotspots, prepare_parent, read_pdb, write_prepared_complex
+
+
+def _execution_flags(command: argparse.ArgumentParser) -> None:
+    mode = command.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Write real command/input plans without executing models (default).",
+    )
+    mode.add_argument("--execute", action="store_true", help="Execute configured external adapters.")
+    command.add_argument(
+        "--resume",
+        action="store_true",
+        help="Skip only complete jobs whose required outputs still exist; retry failed/incomplete jobs once.",
+    )
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="antibody-design")
+    parser = argparse.ArgumentParser(prog="duoforge-ab")
     subparsers = parser.add_subparsers(dest="command", required=True)
     for name in ("validate", "prepare"):
         command = subparsers.add_parser(name)
         command.add_argument("--config", type=Path, required=True)
-
-    run = subparsers.add_parser("run")
-    run.add_argument("--config", type=Path, required=True)
-    mode = run.add_mutually_exclusive_group()
-    mode.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Build the external command plan without executing models (default).",
-    )
-    mode.add_argument(
-        "--execute",
-        action="store_true",
-        help="Attempt adapter execution; v0.1 adapters fail explicitly until integrated.",
-    )
+    for name in ("backbone", "sequence-design", "fold", "run", "proteinmpnn", "rf2"):
+        command = subparsers.add_parser(name)
+        command.add_argument("--config", type=Path, required=True)
+        _execution_flags(command)
     return parser
 
 
@@ -36,25 +41,63 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
         config = load_config(args.config)
-        prepared = prepare_complex(config)
         if args.command == "validate":
+            if config.input.input_quiver:
+                target = config.input.target_structure
+                assert target is not None
+                residues = read_pdb(target)
+                missing = [chain for chain in config.chains.target if chain not in residues]
+                if missing:
+                    raise PreparationError(
+                        "Target chains not found: " + ", ".join(missing)
+                    )
+                hotspots = expand_hotspots(config, residues)
+                print(
+                    f"valid: mode={config.mode} parent=deferred-until-quiver-extraction "
+                    f"quiver={config.input.input_quiver} hotspots={len(hotspots)}"
+                )
+                return 0
+            parent = prepare_parent(config, execute_numbering=False)
             print(
-                f"valid: parent={prepared.parent_id} "
-                f"heavy={len(prepared.heavy_sequence)} "
-                f"light={len(prepared.light_sequence)} "
-                f"antigen_chains={len(prepared.antigen_sequences)}"
+                f"valid: mode={config.mode} parent={parent.parent_id} "
+                f"heavy_length={len(parent.heavy_sequence)} "
+                f"light_length={len(parent.light_sequence)} "
+                f"target_chains={','.join(parent.target_chains)}"
             )
             return 0
         if args.command == "prepare":
-            path = write_prepared_complex(prepared, config.run.output_dir)
-            print(path)
+            if config.input.input_quiver:
+                raise PreparationError(
+                    "input_quiver has no concrete Parent before extraction; run backbone --execute first"
+                )
+            parent = prepare_parent(config, execute_numbering=True)
+            print(write_prepared_complex(parent, config.run.output_dir))
             return 0
 
+        stage = None
+        command = args.command
+        if command == "proteinmpnn":
+            print(
+                "migration: 'proteinmpnn' now aliases 'sequence-design' (IgDesign + AntiFold); no ProteinMPNN/RFantibody weights are used.",
+                file=sys.stderr,
+            )
+            stage = "sequence-design"
+        elif command == "rf2":
+            print(
+                "migration: 'rf2' now aliases 'fold' (Protenix-v2 + OpenDDE-ABAG); RF2 is not run.",
+                file=sys.stderr,
+            )
+            stage = "fold"
+        elif command != "run":
+            stage = command
         result = DesignPipeline.from_config(config).run(
-            config, dry_run=not args.execute
+            config,
+            dry_run=not args.execute,
+            resume=args.resume,
+            only_stage=stage,
         )
-        print(result.plan_path if result.plan_path else result.manifest_path)
-        return 0
+        print(result.plan_path or result.manifest_path)
+        return result.exit_code
     except (OSError, ValueError, RuntimeError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
