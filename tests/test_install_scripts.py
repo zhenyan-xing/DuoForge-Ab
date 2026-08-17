@@ -110,6 +110,30 @@ class InstallScriptsTest(unittest.TestCase):
             self.assertNotIn("rnacentral_", result.stdout)
             self.assertNotIn("pdb_seqres_", result.stdout)
 
+    def test_fetch_dry_run_can_skip_selected_model_assets(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            install_root = Path(tmp) / "duoforge-home"
+
+            result = run_script(
+                "fetch_assets.sh",
+                "--dry-run",
+                "--skip",
+                "igdesign",
+                "--skip",
+                "protenix",
+                "--root",
+                str(install_root),
+            )
+
+            self.assertEqual(result.returncode, 0, result.stdout)
+            self.assertFalse(install_root.exists())
+            self.assertNotIn("igmpnn_acvr2b_holdout.ckpt", result.stdout)
+            self.assertNotIn("igdesign_acvr2b_holdout.ckpt", result.stdout)
+            self.assertNotIn("protenix-v2.pt", result.stdout)
+            self.assertNotIn("protenix-common/", result.stdout)
+            for filename in ("RFdiffusion_Ab.pt", "model.pt", "opendde_abag.pt"):
+                self.assertIn(filename, result.stdout)
+
     def test_template_db_is_explicit_and_never_adds_rna_databases(self):
         with tempfile.TemporaryDirectory() as tmp:
             install_root = Path(tmp) / "duoforge-home"

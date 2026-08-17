@@ -36,6 +36,14 @@ duoforge-ab run --config my_run.yaml --dry-run
 duoforge-ab run --config my_run.yaml --execute
 ```
 
+The default `standard` setup installs all five model environments, and the
+default asset fetch downloads all five mainline model asset groups. After these
+one-time steps, ordinary use has the same high-level shape as RFantibody: edit
+one YAML file, inspect the plan, and start the run with one command. DuoForge-Ab
+uses its own `duoforge-ab run` CLI because it also coordinates two sequence
+generators and two co-fold predictors; it does not pretend to be RFantibody's
+exact command-line interface.
+
 If the official Protenix-v2 CDN works from your region, omit
 `--protenix-checkpoint`; the fetcher will use its pinned official URL. The URL
 returned HTTP 403 during the 2026-08-17 audit and no official alternative mirror
@@ -52,6 +60,15 @@ configuration loading and `duoforge-ab run` never access the network.
 The following are runnable without model weights: YAML validation, PDB chain extraction, hotspot expansion, RFantibody-compatible planning, model input construction, output parser fixture tests, and end-to-end `--dry-run`. ANARCI-backed preparation and all four external model adapters have execution paths, explicit asset preflights, subprocess logs, job states, and resume behavior.
 
 Real model inference was not run in this implementation round. In particular, the IgDesign multi-antigen runner, exact-mask AntiFold runner, Protenix-v2 adapter, and OpenDDE-ABAG adapter are source-checked interfaces but remain unverified with real checkpoints. Missing executables, common data, or checkpoints fail explicitly; no normal pipeline path produces mock results or downloads assets.
+
+A completed `setup.sh` and `fetch_assets.sh` run proves installation and asset
+placement, but not GPU/runtime compatibility. On the first real server, use a
+copy of `my_run.yaml` with `backbone.rfantibody.num_designs: 1`,
+`run.samples_per_seed: 1`, and one seed; then run `validate`, full `--dry-run`,
+and one `--execute` smoke case with every enabled adapter. Only after that
+end-to-end case succeeds should the sampling budget be increased. This is the
+remaining acceptance gate for claiming that the pinned environments work on a
+specific driver/GPU/server.
 
 ## Installation layout and isolation
 
@@ -117,6 +134,38 @@ The standard preflight therefore defaults to 70 GiB free. Change it explicitly
 with `--min-free-gib N` or `DUOFORGE_MIN_FREE_GIB=N`; `--skip-disk-check` is
 available when an administrator knows that hard links, reflinks, or external
 mounts make the estimate overly conservative.
+
+`fetch_assets.sh` downloads every mainline model by default. To save space, pass
+`--skip MODEL` more than once if needed. The option skips both the checkpoint
+and that model's required common inference files; it does not remove an existing
+download and it does not alter `my_run.yaml` automatically.
+
+```bash
+# Save about 10.72 GiB of checkpoints by omitting IgDesign.
+./fetch_assets.sh --root /data/duoforge-ab --skip igdesign
+
+# Example local-redesign asset set using AntiFold + OpenDDE only.
+./fetch_assets.sh --root /data/duoforge-ab \
+  --skip rfantibody --skip igdesign --skip protenix
+```
+
+| `--skip` value | Storage not downloaded | Required configuration change |
+| --- | ---: | --- |
+| `rfantibody` | 0.450 GiB checkpoint | Valid only for `mode: local_redesign`; `de_novo` requires RFdiffusion. |
+| `igdesign` | 10.722 GiB across the LMDesign and IgMPNN checkpoints | Set `generators.igdesign.enabled: false`. The current adapter requires both checkpoints; an IgMPNN-only route is not implemented. |
+| `antifold` | 0.528 GiB checkpoint | Set `generators.antifold.enabled: false`. |
+| `protenix` | Protenix-v2 checkpoint plus its common files; exact total is not published/accessible from the audited region | Set `predictors.protenix.enabled: false`; do not also pass `--protenix-checkpoint`. |
+| `opendde` | about 3.047 GiB including its checkpoint and known common files | Set `predictors.opendde.enabled: false`. |
+
+Keep at least one enabled generator and one enabled predictor. The default
+scientific comparison requires all four adapters, so selective downloads create
+a deliberately reduced pipeline rather than an equivalent full run. The
+20-GiB asset preflight remains conservative after skipping models; lower it
+explicitly with `--min-free-gib N` when the printed asset plan justifies doing
+so. `setup.sh` still installs all model environments under `standard`: skipping
+an environment is not exposed because the IgDesign environment also supplies
+the shared ANARCI numbering executable. Use `--profile bootstrap` only for
+orchestrator development, not for real model execution.
 
 Protein-only MSA/template handling remains deliberately light:
 

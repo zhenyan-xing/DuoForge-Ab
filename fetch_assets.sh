@@ -10,6 +10,7 @@ FORCE=0
 MIN_FREE_GIB="${DUOFORGE_ASSET_MIN_FREE_GIB:-20}"
 SKIP_DISK_CHECK=0
 PROTENIX_CHECKPOINT=""
+SKIPPED_MODELS=()
 
 OPENDDE_REVISION="eddd563ce96571f784012edd8f045181c8f8627d"
 OPENDDE_ROOT="https://huggingface.co/aurekaresearch/OpenDDE/resolve/$OPENDDE_REVISION"
@@ -25,6 +26,9 @@ Code/environment installation remains the separate setup.sh step.
 Options:
   --root DIR                    Installation root
   --protenix-checkpoint FILE    Install an already obtained official protenix-v2.pt
+  --skip MODEL                  Skip one model's assets; repeat as needed
+                                MODEL: rfantibody, igdesign, antifold,
+                                       protenix, or opendde
   --with-template-db            Also install the ~220 MB protein template search DB
   --min-free-gib N              Required free space (default: 20 GiB)
   --skip-disk-check             Do not enforce the free-space check
@@ -61,6 +65,15 @@ run_command() {
     fi
 }
 
+is_skipped() {
+    local wanted="$1"
+    local model
+    for model in "${SKIPPED_MODELS[@]}"; do
+        [[ "$model" == "$wanted" ]] && return 0
+    done
+    return 1
+}
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --root)
@@ -71,6 +84,11 @@ while [[ $# -gt 0 ]]; do
         --protenix-checkpoint)
             [[ $# -ge 2 ]] || die "--protenix-checkpoint requires a file"
             PROTENIX_CHECKPOINT="$2"
+            shift 2
+            ;;
+        --skip)
+            [[ $# -ge 2 ]] || die "--skip requires a model name"
+            SKIPPED_MODELS+=("$2")
             shift 2
             ;;
         --with-template-db)
@@ -105,6 +123,15 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ "$MIN_FREE_GIB" =~ ^[0-9]+$ ]] || die "--min-free-gib must be an integer"
+for model in "${SKIPPED_MODELS[@]}"; do
+    case "$model" in
+        rfantibody|igdesign|antifold|protenix|opendde) ;;
+        *) die "unknown model for --skip: $model" ;;
+    esac
+done
+if is_skipped protenix && [[ -n "$PROTENIX_CHECKPOINT" ]]; then
+    die "--skip protenix cannot be combined with --protenix-checkpoint"
+fi
 [[ "$(uname -s)" == "Linux" ]] || die "only Linux is supported"
 require_command realpath
 if [[ "$DRY_RUN" != "1" ]]; then
@@ -114,11 +141,26 @@ if [[ "$DRY_RUN" != "1" ]]; then
 fi
 INSTALL_ROOT="$(realpath -m "$INSTALL_ROOT")"
 
+KNOWN_CHECKPOINT_BYTES=0
+is_skipped rfantibody || KNOWN_CHECKPOINT_BYTES=$((KNOWN_CHECKPOINT_BYTES + 483452922))
+is_skipped igdesign || KNOWN_CHECKPOINT_BYTES=$((KNOWN_CHECKPOINT_BYTES + 11513197278))
+is_skipped antifold || KNOWN_CHECKPOINT_BYTES=$((KNOWN_CHECKPOINT_BYTES + 566838063))
+is_skipped opendde || KNOWN_CHECKPOINT_BYTES=$((KNOWN_CHECKPOINT_BYTES + 2625271509))
+
 printf 'DuoForge-Ab asset fetch\n'
 printf 'root=%s\n' "$INSTALL_ROOT"
 printf 'required_free_gib=%s\n' "$MIN_FREE_GIB"
-printf 'known_checkpoint_bytes=15188759772\n'
-printf 'protenix_checkpoint_size=unknown-until-official-access-is-restored\n'
+printf 'known_checkpoint_bytes=%s\n' "$KNOWN_CHECKPOINT_BYTES"
+if is_skipped protenix; then
+    printf 'protenix_checkpoint_size=skipped\n'
+else
+    printf 'protenix_checkpoint_size=unknown-until-official-access-is-restored\n'
+fi
+if [[ "${#SKIPPED_MODELS[@]}" == "0" ]]; then
+    printf 'skipped_models=none\n'
+else
+    (IFS=,; printf 'skipped_models=%s\n' "${SKIPPED_MODELS[*]}")
+fi
 printf 'template_database=%s\n' "$([[ "$WITH_TEMPLATE_DB" == "1" ]] && printf enabled || printf disabled)"
 
 if [[ "$DRY_RUN" != "1" ]]; then
@@ -234,50 +276,62 @@ verify_protenix_checkpoint() {
     printf 'warning: Protenix-v2 has no published size/SHA-256; identity cannot be fully verified yet\n' >&2
 }
 
-fetch_file RFdiffusion_Ab.pt \
-    https://files.ipd.uw.edu/pub/RFantibody/RFdiffusion_Ab.pt \
-    "$INSTALL_ROOT/checkpoints/rfantibody/RFdiffusion_Ab.pt" \
-    483452922 ""
-fetch_file igmpnn_acvr2b_holdout.ckpt \
-    https://absci-prod-ai-public-data.s3.us-west-2.amazonaws.com/igmpnn_acvr2b_holdout.ckpt \
-    "$INSTALL_ROOT/checkpoints/igdesign/igmpnn_acvr2b_holdout.ckpt" \
-    6774680 ""
-fetch_file igdesign_acvr2b_holdout.ckpt \
-    https://absci-prod-ai-public-data.s3.us-west-2.amazonaws.com/igdesign_acvr2b_holdout.ckpt \
-    "$INSTALL_ROOT/checkpoints/igdesign/igdesign_acvr2b_holdout.ckpt" \
-    11506422598 ""
-fetch_file model.pt \
-    https://opig.stats.ox.ac.uk/data/downloads/AntiFold/models/model.pt \
-    "$INSTALL_ROOT/checkpoints/antifold/model.pt" \
-    566838063 ""
+if ! is_skipped rfantibody; then
+    fetch_file RFdiffusion_Ab.pt \
+        https://files.ipd.uw.edu/pub/RFantibody/RFdiffusion_Ab.pt \
+        "$INSTALL_ROOT/checkpoints/rfantibody/RFdiffusion_Ab.pt" \
+        483452922 ""
+fi
+if ! is_skipped igdesign; then
+    fetch_file igmpnn_acvr2b_holdout.ckpt \
+        https://absci-prod-ai-public-data.s3.us-west-2.amazonaws.com/igmpnn_acvr2b_holdout.ckpt \
+        "$INSTALL_ROOT/checkpoints/igdesign/igmpnn_acvr2b_holdout.ckpt" \
+        6774680 ""
+    fetch_file igdesign_acvr2b_holdout.ckpt \
+        https://absci-prod-ai-public-data.s3.us-west-2.amazonaws.com/igdesign_acvr2b_holdout.ckpt \
+        "$INSTALL_ROOT/checkpoints/igdesign/igdesign_acvr2b_holdout.ckpt" \
+        11506422598 ""
+fi
+if ! is_skipped antifold; then
+    fetch_file model.pt \
+        https://opig.stats.ox.ac.uk/data/downloads/AntiFold/models/model.pt \
+        "$INSTALL_ROOT/checkpoints/antifold/model.pt" \
+        566838063 ""
+fi
 
-fetch_file opendde_abag.pt \
-    "$OPENDDE_ROOT/opendde_abag.pt?download=true" \
-    "$INSTALL_ROOT/runtime/opendde/checkpoint/opendde_abag.pt" \
-    2625271509 5cf37441ddef2a2f148b81dd4a218ad274f996fecaf17dec901ab6cf1351713d
+if ! is_skipped opendde; then
+    fetch_file opendde_abag.pt \
+        "$OPENDDE_ROOT/opendde_abag.pt?download=true" \
+        "$INSTALL_ROOT/runtime/opendde/checkpoint/opendde_abag.pt" \
+        2625271509 5cf37441ddef2a2f148b81dd4a218ad274f996fecaf17dec901ab6cf1351713d
+fi
 
-for filename in components.cif components.cif.rdkit_mol.pkl clusters-by-entity-40.txt obsolete_release_date.csv; do
-    fetch_file "protenix-common/$filename" \
-        "$PROTENIX_ROOT/common/$filename" \
-        "$INSTALL_ROOT/runtime/protenix/common/$filename" 0 ""
-done
+if ! is_skipped protenix; then
+    for filename in components.cif components.cif.rdkit_mol.pkl clusters-by-entity-40.txt obsolete_release_date.csv; do
+        fetch_file "protenix-common/$filename" \
+            "$PROTENIX_ROOT/common/$filename" \
+            "$INSTALL_ROOT/runtime/protenix/common/$filename" 0 ""
+    done
+fi
 
-fetch_file opendde-common/components.cif \
-    "$OPENDDE_ROOT/common/components.cif?download=true" \
-    "$INSTALL_ROOT/runtime/opendde/common/components.cif" \
-    490777362 bb31ae5cf6c8bc669924313077cb4231ee5ffefd3a20118cd14f3ec89f8bb6a5
-fetch_file opendde-common/components.cif.rdkit_mol.pkl \
-    "$OPENDDE_ROOT/common/components.cif.rdkit_mol.pkl?download=true" \
-    "$INSTALL_ROOT/runtime/opendde/common/components.cif.rdkit_mol.pkl" \
-    142498117 d1cfb71f5993a3ebea7c47877022d7f597bbfbaf86e28a4770e957da6c50cd35
-fetch_file opendde-common/obsolete_to_successor.json \
-    "$OPENDDE_ROOT/common/obsolete_to_successor.json?download=true" \
-    "$INSTALL_ROOT/runtime/opendde/common/obsolete_to_successor.json" \
-    86882 2bc08348d0efba438c109bb27be6fa25b611d371c60b8a8da3de387a4a0698ad
-fetch_file opendde-common/release_date_cache.json \
-    "$OPENDDE_ROOT/common/release_date_cache.json?download=true" \
-    "$INSTALL_ROOT/runtime/opendde/common/release_date_cache.json" \
-    12754898 8b1ef12ddc01a0d5eb2d388c77ded91aa906eebce7440726c57b6f8d1a3ec142
+if ! is_skipped opendde; then
+    fetch_file opendde-common/components.cif \
+        "$OPENDDE_ROOT/common/components.cif?download=true" \
+        "$INSTALL_ROOT/runtime/opendde/common/components.cif" \
+        490777362 bb31ae5cf6c8bc669924313077cb4231ee5ffefd3a20118cd14f3ec89f8bb6a5
+    fetch_file opendde-common/components.cif.rdkit_mol.pkl \
+        "$OPENDDE_ROOT/common/components.cif.rdkit_mol.pkl?download=true" \
+        "$INSTALL_ROOT/runtime/opendde/common/components.cif.rdkit_mol.pkl" \
+        142498117 d1cfb71f5993a3ebea7c47877022d7f597bbfbaf86e28a4770e957da6c50cd35
+    fetch_file opendde-common/obsolete_to_successor.json \
+        "$OPENDDE_ROOT/common/obsolete_to_successor.json?download=true" \
+        "$INSTALL_ROOT/runtime/opendde/common/obsolete_to_successor.json" \
+        86882 2bc08348d0efba438c109bb27be6fa25b611d371c60b8a8da3de387a4a0698ad
+    fetch_file opendde-common/release_date_cache.json \
+        "$OPENDDE_ROOT/common/release_date_cache.json?download=true" \
+        "$INSTALL_ROOT/runtime/opendde/common/release_date_cache.json" \
+        12754898 8b1ef12ddc01a0d5eb2d388c77ded91aa906eebce7440726c57b6f8d1a3ec142
+fi
 
 if [[ "$WITH_TEMPLATE_DB" == "1" ]]; then
     TEMPLATE_DIR="$INSTALL_ROOT/runtime/shared/search_database"
@@ -300,15 +354,17 @@ if [[ "$WITH_TEMPLATE_DB" == "1" ]]; then
     fi
 fi
 
-PROTENIX_DESTINATION="$INSTALL_ROOT/runtime/protenix/checkpoint/protenix-v2.pt"
-if [[ -n "$PROTENIX_CHECKPOINT" ]]; then
-    install_local_file "$(realpath -m "$PROTENIX_CHECKPOINT")" "$PROTENIX_DESTINATION"
-else
-    fetch_file protenix-v2.pt \
-        "$PROTENIX_ROOT/checkpoint/protenix-v2.pt" \
-        "$PROTENIX_DESTINATION" 0 ""
-    if [[ "$DRY_RUN" != "1" ]]; then
-        verify_protenix_checkpoint "$PROTENIX_DESTINATION"
+if ! is_skipped protenix; then
+    PROTENIX_DESTINATION="$INSTALL_ROOT/runtime/protenix/checkpoint/protenix-v2.pt"
+    if [[ -n "$PROTENIX_CHECKPOINT" ]]; then
+        install_local_file "$(realpath -m "$PROTENIX_CHECKPOINT")" "$PROTENIX_DESTINATION"
+    else
+        fetch_file protenix-v2.pt \
+            "$PROTENIX_ROOT/checkpoint/protenix-v2.pt" \
+            "$PROTENIX_DESTINATION" 0 ""
+        if [[ "$DRY_RUN" != "1" ]]; then
+            verify_protenix_checkpoint "$PROTENIX_DESTINATION"
+        fi
     fi
 fi
 
