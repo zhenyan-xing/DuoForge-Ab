@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from antibody_design.prepare import parse_anarci_output, read_pdb
+from antibody_design.prepare import _executable_environment, parse_anarci_output, read_pdb
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -10,6 +10,10 @@ EXAMPLE_PDB = PROJECT_ROOT / "data/examples/mock_complex.pdb"
 
 
 class PrepareTest(unittest.TestCase):
+    def test_absolute_anarci_launcher_uses_its_own_python_environment(self):
+        environment = _executable_environment("/opt/anarci/bin/ANARCI")
+        self.assertEqual(environment["PATH"].split(":", 1)[0], "/opt/anarci/bin")
+
     def test_parses_fixed_anarci_text_output_without_treating_metadata_as_records(self):
         residues = read_pdb(EXAMPLE_PDB)
         heavy = residues["H"]

@@ -1,0 +1,83 @@
+run:
+  run_id: smoke_8ucd_crop_8gb
+  output_dir: ../outputs/smoke_8ucd_crop_8gb
+  seeds: [101]
+  samples_per_seed: 1
+  save_confidence_arrays: none
+
+mode: de_novo
+input:
+  target_structure: ../examples/8ucd_crop_target_4.pdb
+  framework: auto
+
+chains:
+  heavy: H
+  light: L
+  target: [A, B, C]
+
+design:
+  loops: [H3]
+  residues: []
+  fixed_residues: []
+
+hotspots: [A:201, B:201, C:200-203]
+
+numbering:
+  executable: ${DUOFORGE_HOME}/envs/igdesign/bin/ANARCI
+  scheme: imgt
+
+backbone:
+  rfantibody:
+    executable: ${DUOFORGE_HOME}/envs/rfantibody/bin/rfdiffusion
+    qvextract_executable: ${DUOFORGE_HOME}/envs/rfantibody/bin/qvextract
+    upstream_root: ${DUOFORGE_HOME}/sources/RFantibody
+    checkpoint_path: ${DUOFORGE_HOME}/checkpoints/rfantibody/RFdiffusion_Ab.pt
+    num_designs: 1
+    loop_lengths: {H3: 5-13}
+    diffuser_t: 20
+    final_step: 1
+    deterministic: true
+    cautious: true
+    no_trajectory: true
+
+generators:
+  igdesign:
+    enabled: false
+    upstream_root: ${DUOFORGE_HOME}/sources/igdesign
+    python_executable: ${DUOFORGE_HOME}/envs/igdesign/bin/python
+    lmdesign_checkpoint: ${DUOFORGE_HOME}/checkpoints/igdesign/igdesign_acvr2b_holdout.ckpt
+    pmpnn_checkpoint: ${DUOFORGE_HOME}/checkpoints/igdesign/igmpnn_acvr2b_holdout.ckpt
+    proposal_budget: 1
+  antifold:
+    enabled: true
+    upstream_root: ${DUOFORGE_HOME}/sources/AntiFold
+    python_executable: ${DUOFORGE_HOME}/envs/antifold/bin/python
+    checkpoint_path: ${DUOFORGE_HOME}/checkpoints/antifold/model.pt
+    proposal_budget: 1
+    temperature: 0.2
+
+predictors:
+  protenix:
+    enabled: true
+    executable: ${DUOFORGE_HOME}/envs/protenix/bin/protenix
+    runtime_root: ${DUOFORGE_HOME}/runtime/protenix
+    checkpoint_path: ${DUOFORGE_HOME}/runtime/protenix/checkpoint/protenix-v2.pt
+    model_name: protenix-v2
+  opendde:
+    enabled: true
+    executable: ${DUOFORGE_HOME}/envs/opendde/bin/opendde
+    runtime_root: ${DUOFORGE_HOME}/runtime/opendde
+    checkpoint_path: ${DUOFORGE_HOME}/runtime/opendde/checkpoint/opendde_abag.pt
+    model_name: opendde_v1
+    dtype: bf16
+    step: 2
+    cycle: 1
+
+msa:
+  mode: none
+  unpaired: {}
+
+templates:
+  target_hits: {}
+  antibody_hits: {}
+

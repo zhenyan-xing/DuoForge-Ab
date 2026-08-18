@@ -5,6 +5,8 @@ import json
 import os
 import shutil
 import subprocess
+import threading
+import time
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Mapping
@@ -219,6 +221,47 @@ class _JobStore:
     def _write(self, job_id: str, payload: dict) -> None:
         self._path(job_id).write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
+    @staticmethod
+    def _gpu_used_memory_mib() -> int | None:
+        if os.environ.get("DUOFORGE_GPU_TELEMETRY") != "1":
+            return None
+        for query, aggregate in (
+            ("--query-compute-apps=used_memory", sum),
+            ("--query-gpu=memory.used", max),
+        ):
+            try:
+                completed = subprocess.run(
+                    ["nvidia-smi", query, "--format=csv,noheader,nounits"],
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    timeout=3,
+                    check=False,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                return None
+            if completed.returncode != 0:
+                continue
+            values = [
+                int(line.strip())
+                for line in completed.stdout.splitlines()
+                if line.strip().isdigit()
+            ]
+            if values:
+                return aggregate(values)
+        return None
+
+    @staticmethod
+    def _log_reports_oom(path: Path) -> bool:
+        if not path.is_file():
+            return False
+        with path.open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            size = handle.tell()
+            handle.seek(max(0, size - 1024 * 1024))
+            tail = handle.read().decode("utf-8", errors="replace").lower()
+        return "out of memory" in tail and ("cuda" in tail or "gpu" in tail)
+
     def may_skip(self, job_id: str, required: tuple[str, ...]) -> bool:
         path = self._path(job_id)
         if not self.resume or not path.is_file():
@@ -243,6 +286,8 @@ class _JobStore:
             "attempt": int(previous.get("attempt", 0)) + 1,
             "command": command.to_dict(),
             "exit_code": None,
+            "elapsed_seconds": 0.0,
+            "peak_gpu_memory_mib": None,
             "log_path": str(log_path.relative_to(self.run_dir)),
             "required_outputs": list(required),
         }
@@ -251,13 +296,33 @@ class _JobStore:
         payload["status_history"].append("running")
         self._write(job_id, payload)
         if not command.ready:
-            payload.update(status="failed", error="; ".join(command.missing))
-            payload["status_history"].append("failed")
+            error = "; ".join(command.missing)
+            status = (
+                "external_asset_blocked"
+                if "Protenix-v2 checkpoint" in error
+                else "failed"
+            )
+            payload.update(status=status, error=error)
+            payload["status_history"].append(status)
             self._write(job_id, payload)
             return False
         log_path.parent.mkdir(parents=True, exist_ok=True)
         environment = os.environ.copy()
         environment.update(command.env)
+        started = time.monotonic()
+        stop_monitor = threading.Event()
+        peak_gpu_memory_mib = self._gpu_used_memory_mib()
+
+        def monitor_gpu() -> None:
+            nonlocal peak_gpu_memory_mib
+            while not stop_monitor.wait(0.5):
+                used = self._gpu_used_memory_mib()
+                if used is not None:
+                    peak_gpu_memory_mib = max(peak_gpu_memory_mib or 0, used)
+
+        monitor = threading.Thread(target=monitor_gpu, daemon=True)
+        if os.environ.get("DUOFORGE_GPU_TELEMETRY") == "1":
+            monitor.start()
         try:
             with log_path.open("w", encoding="utf-8") as log:
                 completed = subprocess.run(
@@ -269,14 +334,25 @@ class _JobStore:
                     check=False,
                 )
         except OSError as error:
+            stop_monitor.set()
+            if monitor.is_alive():
+                monitor.join(timeout=4)
+            payload["elapsed_seconds"] = round(time.monotonic() - started, 3)
+            payload["peak_gpu_memory_mib"] = peak_gpu_memory_mib
             payload.update(status="failed", error=f"external command could not start: {error}")
             payload["status_history"].append("failed")
             self._write(job_id, payload)
             return False
+        stop_monitor.set()
+        if monitor.is_alive():
+            monitor.join(timeout=4)
+        payload["elapsed_seconds"] = round(time.monotonic() - started, 3)
+        payload["peak_gpu_memory_mib"] = peak_gpu_memory_mib
         payload["exit_code"] = completed.returncode
         if completed.returncode != 0:
-            payload.update(status="failed", error="external command returned non-zero")
-            payload["status_history"].append("failed")
+            status = "resource_blocked" if self._log_reports_oom(log_path) else "failed"
+            payload.update(status=status, error="external command returned non-zero")
+            payload["status_history"].append(status)
             self._write(job_id, payload)
             return False
         if not _required_complete(required):

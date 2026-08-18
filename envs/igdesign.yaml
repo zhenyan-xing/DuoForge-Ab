@@ -17,6 +17,7 @@ dependencies:
   - biopython>=1.84
   - datasets>=2.20.0
   - hmmer=3.3.2
+  - muscle=3.8.1551
   - pip:
       - huggingface_hub>=0.24.5
       - transformers>=4.42.4

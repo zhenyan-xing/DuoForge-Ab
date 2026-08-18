@@ -49,6 +49,124 @@ If the official Protenix-v2 CDN works from your region, omit
 returned HTTP 403 during the 2026-08-17 audit and no official alternative mirror
 was available, so the script never substitutes Protenix-v1 or a community copy.
 
+## Staged 8 GB smoke workflow
+
+[`configs/smoke_8ucd_crop_8gb.yaml`](configs/smoke_8ucd_crop_8gb.yaml) is the
+explicit RTX 4060 8 GB compatibility smoke. It uses one GPU and the normal
+blocking subprocess path, so RFantibody, AntiFold, Protenix, and OpenDDE never
+occupy the GPU concurrently. Ordinary configuration loading and ordinary
+`duoforge-ab run` still never download anything; network access occurs only in
+the explicitly invoked setup/fetch workflow.
+
+Inspect the complete workflow first, then execute it:
+
+```bash
+./run_smoke.sh --dry-run --root /tmp/duoforge-ab-smoke \
+  --config configs/smoke_8ucd_crop_8gb.yaml --cleanup-on-success
+
+./run_smoke.sh --execute --root /tmp/duoforge-ab-smoke \
+  --config configs/smoke_8ucd_crop_8gb.yaml --cleanup-on-success
+```
+
+The equivalent manual lifecycle is:
+
+```bash
+./setup.sh --root /tmp/duoforge-ab-smoke
+source /tmp/duoforge-ab-smoke/env.sh
+
+./fetch_assets.sh --stage backbone --root /tmp/duoforge-ab-smoke
+duoforge-ab backbone --config configs/smoke_8ucd_crop_8gb.yaml --execute --resume
+./cleanup_assets.sh --stage backbone --root /tmp/duoforge-ab-smoke --dry-run
+./cleanup_assets.sh --stage backbone --root /tmp/duoforge-ab-smoke --execute
+
+./fetch_assets.sh --stage sequence-design --root /tmp/duoforge-ab-smoke
+duoforge-ab sequence-design --config configs/smoke_8ucd_crop_8gb.yaml --execute --resume
+./cleanup_assets.sh --stage sequence-design --root /tmp/duoforge-ab-smoke --execute
+
+./fetch_assets.sh --stage fold --root /tmp/duoforge-ab-smoke
+duoforge-ab fold --config configs/smoke_8ucd_crop_8gb.yaml --execute --resume
+# Fold cleanup is optional and should follow only a complete validated fold.
+./cleanup_assets.sh --stage fold --root /tmp/duoforge-ab-smoke --execute
+```
+
+`fetch_assets.sh --stage all` is equivalent to the default fetch behavior.
+An explicitly supplied `--stage` cannot be combined with `--skip`; this avoids
+ambiguous precedence. The staged asset sets are:
+
+| Stage | Files | Published/known size |
+| --- | --- | ---: |
+| `backbone` | `RFdiffusion_Ab.pt` | 483,452,922 bytes (0.450 GiB) |
+| `sequence-design` | IgDesign LMDesign, IgMPNN, and AntiFold `model.pt` | 12,080,035,341 bytes (11.250 GiB) |
+| `fold` | official Protenix-v2 + Protenix common files; OpenDDE-ABAG + OpenDDE common files | OpenDDE part: 3,271,388,768 bytes (3.047 GiB); official Protenix total is not published |
+
+The 20 GiB value is a per-stage **soft budget for checkpoint and model common
+files only**. It excludes conda/uv environments, package caches, source trees,
+prepared inputs, logs, and final outputs; those are reported separately. The
+fetcher prints its known estimate before downloading and actual completed-file
+usage afterward, and warns rather than silently changing the model if the soft
+budget is exceeded. No large MSA, RNA, or full template database is part of this
+smoke.
+
+Cleanup is deliberately narrow. `cleanup_assets.sh` defaults to a dry run,
+rejects `/`, `$HOME`, and the repository root, and removes only the exact
+checkpoint/common allowlist for one stage plus matching `.part`/`.partial`
+downloads. It never removes sources, environments, caches, outputs, prepared
+files, logs, user input, or unknown files. Failed stages retain assets for
+diagnosis.
+
+### 8UCD crop scope and scientific limitation
+
+The smoke target is [`examples/8ucd_crop_target_4.pdb`](examples/8ucd_crop_target_4.pdb):
+chain A has 24 residues (187–210), B has 24 (186–209), and C has 27
+(187–213), totaling 75 residues and 681 atoms. The complete
+[`examples/8UCD.cif`](examples/8UCD.cif) is used only to audit the crop and the
+experimental Fab contacts; it is never supplied as a blind predictor template.
+The experimental H/L Fab contains 225 residues, so the predicted complex is
+about 300 protein tokens and about 2,400 atoms. The crop retains all
+experimental Fab-contact residues within 6 Å.
+
+This is an engineering compatibility case, not a scientific-quality benchmark.
+The three short STEAP1 fragments no longer have the complete trimeric/membrane
+protein scaffold, so success proves checkpoint loading, forward execution,
+output parsing, chain handling, and record generation only. It cannot establish
+that the generated antibody or co-folded structure is physically correct.
+
+### Smoke parameter glossary
+
+| Parameter | 中文含义 | Meaning in this smoke |
+| --- | --- | --- |
+| `mode: de_novo` | 从头生成抗体骨架模式 | RFantibody creates one antibody parent around the supplied target crop. |
+| `framework: auto` | 自动选择固定框架 | Uses RFantibody's pinned hu-4D5-8 Fv preset; it does not mean framework-free generation. |
+| `chains.heavy/light: H/L` | 抗体重链/轻链标识 | Output antibody chains are H and L. |
+| `chains.target: [A,B,C]` | 靶标链列表 | All three crop chains remain present in every stage. |
+| `design.loops: [H3]` | 仅设计重链 CDR3 | Only H3 positions may change during sequence design. |
+| `hotspots` | RFdiffusion/IgDesign 使用的靶点热点 | `A:201`, `B:201`, and `C:200-203`; they are not blind-fold restraints. |
+| `num_designs: 1` | 骨架候选数 | Generates one RFantibody parent. |
+| `diffuser_t: 20` | RFdiffusion 去噪时间步数 | Reduced from the production-oriented 50 solely to shorten the compatibility smoke; not a production-quality setting. |
+| `run.seeds: [101]` | 随机种子 | One deterministic seed is shared across adapters. |
+| `samples_per_seed: 1` | 每个种子、每个预测器的结构样本数 | Each enabled fold model requests exactly one structure per candidate. |
+| `proposal_budget: 1` | 每个序列生成器的最大原始提案数 | Minimal one-proposal budget; raise only to 2 if exact deduplication causes a documented shortfall. |
+| `save_confidence_arrays: none` | 不保存大型逐原子置信度数组 | Native scalar metrics remain, while bulky arrays are omitted. |
+| `msa.mode: none` | 不使用多序列比对 | H/L and target use query information only; no MSA search or download occurs. |
+| empty `templates.*_hits` | 不使用模板命中 | The complete 8UCD, original Fab, and RFdiffusion pose are not injected into blind co-folding. |
+| `dtype: bf16` | bfloat16 数值类型 | OpenDDE stores many inference activations in 16-bit brain floating point to reduce VRAM; Protenix-v2 keeps its official default BF16 path. |
+| `FP32` | 32 位单精度浮点 | The official IgDesign checkpoint is loaded by its upstream FP32 path; no quantization or silent precision substitution is used. |
+| `N_token` | 模型序列 token 数 | Approximately 300 protein residues/tokens; pairwise work often grows roughly with `N_token²`. |
+| `N_atom` | 原子数 | Approximately 2,400 predicted atoms; atom-level heads and output memory scale with this count. |
+| `step: 2` | OpenDDE 扩散去噪步数 | Smoke-only reduction from the upstream default 200; validates loading/forward/output, not structural quality. |
+| `cycle: 1` | OpenDDE Pairformer 循环次数 | Smoke-only reduction from the upstream default 10; likewise not a production setting. |
+
+On an RTX 4060 8 GB, RFantibody and AntiFold are the more plausible real
+inference paths; Protenix-v2 and OpenDDE must be measured. The 10.716 GiB
+IgDesign LMDesign file alone exceeds total VRAM before the required 1.5 GiB
+activation margin, so the 8 GB config disables IgDesign inference after a
+separate official-size/format/resource preflight. Its status must be reported as
+`resource_blocked`, never as successful inference; AntiFold success does not
+mean both sequence generators succeeded. Use
+[`configs/smoke_8ucd_crop_full.yaml`](configs/smoke_8ucd_crop_full.yaml) on a
+server with at least 24 GB VRAM to attempt all adapters without changing their
+identities.
+
 Both scripts are resumable at file/environment granularity. Re-running them
 reuses a checkout only when its exact commit matches, reuses complete assets,
 and leaves `.part` downloads available for HTTP resume. `setup.sh` never fetches
@@ -57,18 +175,28 @@ configuration loading and `duoforge-ab run` never access the network.
 
 ## Current status
 
-The following are runnable without model weights: YAML validation, PDB chain extraction, hotspot expansion, RFantibody-compatible planning, model input construction, output parser fixture tests, and end-to-end `--dry-run`. ANARCI-backed preparation and all four external model adapters have execution paths, explicit asset preflights, subprocess logs, job states, and resume behavior.
+The staged smoke above was executed on 2026-08-17/18 on an NVIDIA GeForce RTX
+4060 Laptop GPU (8,188 MiB) with driver 581.29. These are compatibility results,
+not quality claims:
 
-Real model inference was not run in this implementation round. In particular, the IgDesign multi-antigen runner, exact-mask AntiFold runner, Protenix-v2 adapter, and OpenDDE-ABAG adapter are source-checked interfaces but remain unverified with real checkpoints. Missing executables, common data, or checkpoints fail explicitly; no normal pipeline path produces mock results or downloads assets.
+| Component | Exact status | Real smoke evidence |
+| --- | --- | --- |
+| RFantibody | `complete` | One parent PDB; 304.037 s; CUDA tensors logged. Peak VRAM is unavailable because the initial per-process WSL telemetry returned no numeric value. |
+| ANARCI preparation | `complete` | One Parent with complete IMGT numbering, 11 H3 designable positions, three target chains, and six expanded hotspots. |
+| IgDesign | `resource_blocked` | Official 11,506,422,598-byte PyTorch ZIP verified; conservative requirement 12,510 MiB versus 6,995 MiB free. Inference was not attempted. |
+| AntiFold | `complete` | One real candidate in 6.101 s; 10 mutations, all confined to the 11-position H3 mask. Peak VRAM is unavailable from the initial telemetry. |
+| Protenix-v2 | `external_asset_blocked` | The official checkpoint CDN returned HTTP 403; no older model or fabricated checkpoint was substituted. |
+| OpenDDE-ABAG | execution `complete`; coordinate sanity `implausible` | BF16, sample 1, step 2, cycle 1; `N_asym=5`, `N_token=302`, `N_atom=2450`, `N_msa=1`; 40.013 s job and 26.82 s model forward; one parseable mmCIF plus confidence JSON. Device-total used-memory peak was 7,495 MiB, including pre-existing GPU use. All 297 sequential CA distances fell outside 3–5 Å (median 2,235.18 Å), so the two-step output is not a chemically meaningful structure. |
 
-A completed `setup.sh` and `fetch_assets.sh` run proves installation and asset
-placement, but not GPU/runtime compatibility. On the first real server, use a
-copy of `my_run.yaml` with `backbone.rfantibody.num_designs: 1`,
-`run.samples_per_seed: 1`, and one seed; then run `validate`, full `--dry-run`,
-and one `--execute` smoke case with every enabled adapter. Only after that
-end-to-end case succeeds should the sampling budget be increased. This is the
-remaining acceptance gate for claiming that the pinned environments work on a
-specific driver/GPU/server.
+The resulting run is therefore `partial_smoke`: the real backbone → AntiFold →
+OpenDDE path completed and produced one parsed prediction, while IgDesign is
+resource-blocked and Protenix-v2 is external-asset-blocked. Successful backbone
+and sequence-design assets were cleaned after validation. Fold assets are
+retained because the fold stage is only partial and can be resumed after an
+official Protenix-v2 checkpoint is supplied. The deliberately reduced two-step
+OpenDDE schedule validates the software path only: its native confidence scores
+must not be interpreted as scientific evidence when the coordinate sanity check
+fails. No normal pipeline path produces mock results or downloads assets.
 
 ## Installation layout and isolation
 

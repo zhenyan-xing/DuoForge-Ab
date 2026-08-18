@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -31,6 +32,18 @@ def _frameworks(request: RFdiffusionRequest, root: Path) -> tuple[Path, ...]:
 def _missing_file(path: Path, label: str, missing: list[str]) -> None:
     if not path.is_file():
         missing.append(f"{label}: {path}")
+
+
+def _launcher_env(executable: str) -> dict[str, str]:
+    """Keep RFantibody's nested ``python`` call in the launcher's environment."""
+    executable_path = Path(executable)
+    if not executable_path.is_absolute():
+        return {}
+    return {
+        "PATH": os.pathsep.join(
+            (str(executable_path.parent), os.environ.get("PATH", ""))
+        ).rstrip(os.pathsep)
+    }
 
 
 class RFantibodyAdapter:
@@ -143,6 +156,7 @@ class RFantibodyAdapter:
                     ExternalCommand(
                         argv=tuple(argv),
                         cwd=root if options.get("upstream_root") else None,
+                        env=_launcher_env(executable),
                         ready=not per_command_missing,
                         missing=tuple(dict.fromkeys(per_command_missing)),
                     )

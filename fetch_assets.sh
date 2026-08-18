@@ -11,6 +11,8 @@ MIN_FREE_GIB="${DUOFORGE_ASSET_MIN_FREE_GIB:-20}"
 SKIP_DISK_CHECK=0
 PROTENIX_CHECKPOINT=""
 SKIPPED_MODELS=()
+STAGE="all"
+STAGE_EXPLICIT=0
 
 OPENDDE_REVISION="eddd563ce96571f784012edd8f045181c8f8627d"
 OPENDDE_ROOT="https://huggingface.co/aurekaresearch/OpenDDE/resolve/$OPENDDE_REVISION"
@@ -25,6 +27,7 @@ Code/environment installation remains the separate setup.sh step.
 
 Options:
   --root DIR                    Installation root
+  --stage NAME                 all (default), backbone, sequence-design, or fold
   --protenix-checkpoint FILE    Install an already obtained official protenix-v2.pt
   --skip MODEL                  Skip one model's assets; repeat as needed
                                 MODEL: rfantibody, igdesign, antifold,
@@ -74,11 +77,30 @@ is_skipped() {
     return 1
 }
 
+is_selected() {
+    local model="$1"
+    is_skipped "$model" && return 1
+    case "$STAGE:$model" in
+        all:*|backbone:rfantibody|sequence-design:igdesign|sequence-design:antifold|fold:protenix|fold:opendde)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --root)
             [[ $# -ge 2 ]] || die "--root requires a directory"
             INSTALL_ROOT="$2"
+            shift 2
+            ;;
+        --stage)
+            [[ $# -ge 2 ]] || die "--stage requires a name"
+            STAGE="$2"
+            STAGE_EXPLICIT=1
             shift 2
             ;;
         --protenix-checkpoint)
@@ -123,6 +145,19 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ "$MIN_FREE_GIB" =~ ^[0-9]+$ ]] || die "--min-free-gib must be an integer"
+case "$STAGE" in
+    all|backbone|sequence-design|fold) ;;
+    *) die "unknown stage: $STAGE" ;;
+esac
+if [[ "$STAGE_EXPLICIT" == "1" && "${#SKIPPED_MODELS[@]}" != "0" ]]; then
+    die "--stage cannot be combined with --skip"
+fi
+if [[ "$STAGE" != "all" && "$STAGE" != "fold" && -n "$PROTENIX_CHECKPOINT" ]]; then
+    die "--protenix-checkpoint requires --stage fold or all"
+fi
+if [[ "$STAGE" != "all" && "$STAGE" != "fold" && "$WITH_TEMPLATE_DB" == "1" ]]; then
+    die "--with-template-db requires --stage fold or all"
+fi
 for model in "${SKIPPED_MODELS[@]}"; do
     case "$model" in
         rfantibody|igdesign|antifold|protenix|opendde) ;;
@@ -135,23 +170,29 @@ fi
 [[ "$(uname -s)" == "Linux" ]] || die "only Linux is supported"
 require_command realpath
 if [[ "$DRY_RUN" != "1" ]]; then
-    for command_name in curl stat sha256sum head df awk; do
+    for command_name in curl stat sha256sum head df awk du; do
         require_command "$command_name"
     done
 fi
 INSTALL_ROOT="$(realpath -m "$INSTALL_ROOT")"
 
 KNOWN_CHECKPOINT_BYTES=0
-is_skipped rfantibody || KNOWN_CHECKPOINT_BYTES=$((KNOWN_CHECKPOINT_BYTES + 483452922))
-is_skipped igdesign || KNOWN_CHECKPOINT_BYTES=$((KNOWN_CHECKPOINT_BYTES + 11513197278))
-is_skipped antifold || KNOWN_CHECKPOINT_BYTES=$((KNOWN_CHECKPOINT_BYTES + 566838063))
-is_skipped opendde || KNOWN_CHECKPOINT_BYTES=$((KNOWN_CHECKPOINT_BYTES + 2625271509))
+is_selected rfantibody && KNOWN_CHECKPOINT_BYTES=$((KNOWN_CHECKPOINT_BYTES + 483452922))
+is_selected igdesign && KNOWN_CHECKPOINT_BYTES=$((KNOWN_CHECKPOINT_BYTES + 11513197278))
+is_selected antifold && KNOWN_CHECKPOINT_BYTES=$((KNOWN_CHECKPOINT_BYTES + 566838063))
+is_selected opendde && KNOWN_CHECKPOINT_BYTES=$((KNOWN_CHECKPOINT_BYTES + 2625271509))
+KNOWN_COMMON_BYTES=0
+is_selected opendde && KNOWN_COMMON_BYTES=$((KNOWN_COMMON_BYTES + 646117259))
 
 printf 'DuoForge-Ab asset fetch\n'
 printf 'root=%s\n' "$INSTALL_ROOT"
+printf 'stage=%s\n' "$STAGE"
 printf 'required_free_gib=%s\n' "$MIN_FREE_GIB"
 printf 'known_checkpoint_bytes=%s\n' "$KNOWN_CHECKPOINT_BYTES"
-if is_skipped protenix; then
+printf 'known_common_bytes=%s\n' "$KNOWN_COMMON_BYTES"
+printf 'known_stage_asset_bytes=%s\n' "$((KNOWN_CHECKPOINT_BYTES + KNOWN_COMMON_BYTES))"
+printf 'stage_soft_budget_bytes=%s\n' "$((20 * 1024 * 1024 * 1024))"
+if ! is_selected protenix; then
     printf 'protenix_checkpoint_size=skipped\n'
 else
     printf 'protenix_checkpoint_size=unknown-until-official-access-is-restored\n'
@@ -181,14 +222,15 @@ if [[ "$DRY_RUN" != "1" ]]; then
     fi
 fi
 
-run_command mkdir -p \
-    "$INSTALL_ROOT/checkpoints/rfantibody" \
-    "$INSTALL_ROOT/checkpoints/igdesign" \
-    "$INSTALL_ROOT/checkpoints/antifold" \
-    "$INSTALL_ROOT/runtime/protenix/checkpoint" \
-    "$INSTALL_ROOT/runtime/protenix/common" \
-    "$INSTALL_ROOT/runtime/opendde/checkpoint" \
-    "$INSTALL_ROOT/runtime/opendde/common"
+is_selected rfantibody && run_command mkdir -p "$INSTALL_ROOT/checkpoints/rfantibody"
+is_selected igdesign && run_command mkdir -p "$INSTALL_ROOT/checkpoints/igdesign"
+is_selected antifold && run_command mkdir -p "$INSTALL_ROOT/checkpoints/antifold"
+if is_selected protenix; then
+    run_command mkdir -p "$INSTALL_ROOT/runtime/protenix/checkpoint" "$INSTALL_ROOT/runtime/protenix/common"
+fi
+if is_selected opendde; then
+    run_command mkdir -p "$INSTALL_ROOT/runtime/opendde/checkpoint" "$INSTALL_ROOT/runtime/opendde/common"
+fi
 
 verify_file() {
     local path="$1"
@@ -219,7 +261,9 @@ fetch_file() {
     fi
     printf '\n'
     if [[ "$DRY_RUN" == "1" ]]; then
-        print_command curl --fail --location --retry 5 --continue-at - \
+        printf 'download_attempts=32 for transport stalls; HTTP errors stop immediately\n'
+        print_command curl --fail --location \
+            --speed-limit 1048576 --speed-time 30 --continue-at - \
             --output "$destination.part" "$url"
         return
     fi
@@ -228,8 +272,26 @@ fetch_file() {
         return
     fi
     mkdir -p "$(dirname "$destination")"
-    if ! curl --fail --location --retry 5 --continue-at - \
-        --output "$destination.part" "$url"; then
+    local attempt curl_rc downloaded current_bytes
+    downloaded=0
+    attempt=1
+    while (( attempt <= 32 )); do
+        current_bytes=0
+        [[ ! -f "$destination.part" ]] \
+            || current_bytes="$(stat -c '%s' "$destination.part")"
+        printf 'download_attempt=%s resume_bytes=%s\n' "$attempt" "$current_bytes"
+        if curl --fail --location \
+            --speed-limit 1048576 --speed-time 30 --continue-at - \
+            --output "$destination.part" "$url"; then
+            downloaded=1
+            break
+        else
+            curl_rc=$?
+            [[ "$curl_rc" != "22" ]] || break
+        fi
+        attempt=$((attempt + 1))
+    done
+    if [[ "$downloaded" != "1" ]]; then
         printf 'error: download failed for %s; partial file kept at %s\n' \
             "$label" "$destination.part" >&2
         if [[ "$label" == "protenix-v2.pt" ]]; then
@@ -276,13 +338,13 @@ verify_protenix_checkpoint() {
     printf 'warning: Protenix-v2 has no published size/SHA-256; identity cannot be fully verified yet\n' >&2
 }
 
-if ! is_skipped rfantibody; then
+if is_selected rfantibody; then
     fetch_file RFdiffusion_Ab.pt \
         https://files.ipd.uw.edu/pub/RFantibody/RFdiffusion_Ab.pt \
         "$INSTALL_ROOT/checkpoints/rfantibody/RFdiffusion_Ab.pt" \
         483452922 ""
 fi
-if ! is_skipped igdesign; then
+if is_selected igdesign; then
     fetch_file igmpnn_acvr2b_holdout.ckpt \
         https://absci-prod-ai-public-data.s3.us-west-2.amazonaws.com/igmpnn_acvr2b_holdout.ckpt \
         "$INSTALL_ROOT/checkpoints/igdesign/igmpnn_acvr2b_holdout.ckpt" \
@@ -292,21 +354,21 @@ if ! is_skipped igdesign; then
         "$INSTALL_ROOT/checkpoints/igdesign/igdesign_acvr2b_holdout.ckpt" \
         11506422598 ""
 fi
-if ! is_skipped antifold; then
+if is_selected antifold; then
     fetch_file model.pt \
         https://opig.stats.ox.ac.uk/data/downloads/AntiFold/models/model.pt \
         "$INSTALL_ROOT/checkpoints/antifold/model.pt" \
         566838063 ""
 fi
 
-if ! is_skipped opendde; then
+if is_selected opendde; then
     fetch_file opendde_abag.pt \
         "$OPENDDE_ROOT/opendde_abag.pt?download=true" \
         "$INSTALL_ROOT/runtime/opendde/checkpoint/opendde_abag.pt" \
         2625271509 5cf37441ddef2a2f148b81dd4a218ad274f996fecaf17dec901ab6cf1351713d
 fi
 
-if ! is_skipped protenix; then
+if is_selected protenix; then
     for filename in components.cif components.cif.rdkit_mol.pkl clusters-by-entity-40.txt obsolete_release_date.csv; do
         fetch_file "protenix-common/$filename" \
             "$PROTENIX_ROOT/common/$filename" \
@@ -314,7 +376,7 @@ if ! is_skipped protenix; then
     done
 fi
 
-if ! is_skipped opendde; then
+if is_selected opendde; then
     fetch_file opendde-common/components.cif \
         "$OPENDDE_ROOT/common/components.cif?download=true" \
         "$INSTALL_ROOT/runtime/opendde/common/components.cif" \
@@ -354,7 +416,7 @@ if [[ "$WITH_TEMPLATE_DB" == "1" ]]; then
     fi
 fi
 
-if ! is_skipped protenix; then
+if is_selected protenix; then
     PROTENIX_DESTINATION="$INSTALL_ROOT/runtime/protenix/checkpoint/protenix-v2.pt"
     if [[ -n "$PROTENIX_CHECKPOINT" ]]; then
         install_local_file "$(realpath -m "$PROTENIX_CHECKPOINT")" "$PROTENIX_DESTINATION"
@@ -365,6 +427,50 @@ if ! is_skipped protenix; then
         if [[ "$DRY_RUN" != "1" ]]; then
             verify_protenix_checkpoint "$PROTENIX_DESTINATION"
         fi
+    fi
+fi
+
+if [[ "$DRY_RUN" != "1" ]]; then
+    asset_bytes=0
+    asset_du_kib=0
+    while IFS= read -r relative_path; do
+        [[ -n "$relative_path" ]] || continue
+        asset_path="$INSTALL_ROOT/$relative_path"
+        [[ -f "$asset_path" ]] || continue
+        asset_bytes=$((asset_bytes + $(stat -c '%s' "$asset_path")))
+        asset_du_kib=$((asset_du_kib + $(du -k "$asset_path" | awk '{print $1}')))
+    done < <(
+        case "$STAGE" in
+            all|backbone) printf '%s\n' checkpoints/rfantibody/RFdiffusion_Ab.pt ;;
+        esac
+        case "$STAGE" in
+            all|sequence-design)
+                printf '%s\n' \
+                    checkpoints/igdesign/igmpnn_acvr2b_holdout.ckpt \
+                    checkpoints/igdesign/igdesign_acvr2b_holdout.ckpt \
+                    checkpoints/antifold/model.pt
+                ;;
+        esac
+        case "$STAGE" in
+            all|fold)
+                printf '%s\n' \
+                    runtime/protenix/checkpoint/protenix-v2.pt \
+                    runtime/protenix/common/components.cif \
+                    runtime/protenix/common/components.cif.rdkit_mol.pkl \
+                    runtime/protenix/common/clusters-by-entity-40.txt \
+                    runtime/protenix/common/obsolete_release_date.csv \
+                    runtime/opendde/checkpoint/opendde_abag.pt \
+                    runtime/opendde/common/components.cif \
+                    runtime/opendde/common/components.cif.rdkit_mol.pkl \
+                    runtime/opendde/common/obsolete_to_successor.json \
+                    runtime/opendde/common/release_date_cache.json
+                ;;
+        esac
+    )
+    printf 'actual_stage_asset_bytes=%s\n' "$asset_bytes"
+    printf 'actual_stage_asset_du_kib=%s\n' "$asset_du_kib"
+    if (( asset_du_kib * 1024 > 20 * 1024 * 1024 * 1024 )); then
+        printf 'warning: stage assets exceed the 20 GiB soft budget\n' >&2
     fi
 fi
 

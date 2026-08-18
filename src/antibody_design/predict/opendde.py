@@ -59,20 +59,32 @@ class OpenDDEAdapter(StructurePredictor):
             missing.append(
                 "save_confidence_arrays=top1 is reserved but not safely supported by the job-level upstream flag"
             )
+        argv = [
+            executable, "pred",
+            "-i", str(request.input_path),
+            "-o", str(request.output_dir),
+            "-s", str(request.seed),
+            "-e", str(request.samples_per_seed),
+            "-n", "opendde_v1",
+            "--load_checkpoint_path", str(checkpoint),
+            "--use_msa", str(use_msa).lower(),
+            "--use_template", str(use_template).lower(),
+            "--use_rna_msa", "false",
+            "--need_atom_confidence", str(need_arrays).lower(),
+        ]
+        dtype = request.options.get("dtype")
+        if dtype is not None:
+            if dtype not in {"bf16", "fp32"}:
+                raise ValueError("OpenDDE dtype must be bf16 or fp32")
+            argv.extend(("--dtype", str(dtype)))
+        for option in ("step", "cycle"):
+            value = request.options.get(option)
+            if value is not None:
+                if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+                    raise ValueError(f"OpenDDE {option} must be a positive integer")
+                argv.extend((f"--{option}", str(value)))
         command = ExternalCommand(
-            argv=(
-                executable, "pred",
-                "-i", str(request.input_path),
-                "-o", str(request.output_dir),
-                "-s", str(request.seed),
-                "-e", str(request.samples_per_seed),
-                "-n", "opendde_v1",
-                "--load_checkpoint_path", str(checkpoint),
-                "--use_msa", str(use_msa).lower(),
-                "--use_template", str(use_template).lower(),
-                "--use_rna_msa", "false",
-                "--need_atom_confidence", str(need_arrays).lower(),
-            ),
+            argv=tuple(argv),
             env={"OPENDDE_ROOT_DIR": str(runtime)},
             ready=not missing,
             missing=tuple(missing),
@@ -85,6 +97,7 @@ class OpenDDEAdapter(StructurePredictor):
             notes=(
                 f"OpenDDE source is pinned to commit {OPENDDE_COMMIT}.",
                 "opendde_v1 is the architecture; opendde_abag.pt is selected only by explicit checkpoint path.",
+                "dtype/step/cycle are forwarded only when explicitly configured; reduced counts are smoke-only.",
                 "No hotspot, epitope, contact restraint, or RFdiffusion pose is supplied.",
             ),
             metadata={

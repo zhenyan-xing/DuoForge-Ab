@@ -1,9 +1,12 @@
 import csv
 import json
+import os
+import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from antibody_design.analysis.candidates import merge_generation_proposals
 from antibody_design.analysis.geometry import compute_geometry
@@ -24,6 +27,15 @@ from test_config import EXAMPLE_PDB, write_config
 
 
 class PipelineTest(unittest.TestCase):
+    def test_gpu_telemetry_falls_back_to_device_memory_on_wsl(self):
+        no_per_process_values = subprocess.CompletedProcess([], 0, "", "")
+        device_memory = subprocess.CompletedProcess([], 0, "6144\n", "")
+        with patch.dict(os.environ, {"DUOFORGE_GPU_TELEMETRY": "1"}), patch(
+            "antibody_design.pipeline.subprocess.run",
+            side_effect=(no_per_process_values, device_memory),
+        ):
+            self.assertEqual(JobStore._gpu_used_memory_mib(), 6144)
+
     def test_cross_generator_duplicate_is_one_candidate_with_two_provenances(self):
         parent = Parent(
             parent_id="parent-1",
@@ -90,6 +102,53 @@ class PipelineTest(unittest.TestCase):
             self.assertEqual(chain_ids, ["H", "L", "A"])
             self.assertNotIn("hotspots", predictor_input[0])
             self.assertNotIn("templateStructure", predictor_input[0])
+
+    def test_rfantibody_child_python_uses_the_rfantibody_environment(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = write_config(Path(tmp), "de_novo")
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(
+                    "    executable: rfdiffusion",
+                    "    executable: /opt/rfantibody/bin/rfdiffusion",
+                ),
+                encoding="utf-8",
+            )
+            config = load_config(path)
+            result = DesignPipeline.from_config(config).run(
+                config, dry_run=True, only_stage="backbone"
+            )
+            plan = json.loads(result.plan_path.read_text(encoding="utf-8"))
+
+        command = plan["stages"][0]["commands"][0]
+        self.assertEqual(command["env"]["PATH"].split(":", 1)[0], "/opt/rfantibody/bin")
+
+    def test_opendde_smoke_overrides_map_to_supported_cli_flags_only_when_set(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = write_config(Path(tmp), "de_novo")
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(
+                    "    checkpoint_path: /models/opendde/checkpoint/opendde_abag.pt",
+                    "    checkpoint_path: /models/opendde/checkpoint/opendde_abag.pt\n"
+                    "    dtype: bf16\n"
+                    "    step: 2\n"
+                    "    cycle: 1",
+                ),
+                encoding="utf-8",
+            )
+            result = DesignPipeline.from_config(load_config(path)).run(
+                load_config(path), dry_run=True, only_stage="fold"
+            )
+            plan = json.loads(result.plan_path.read_text(encoding="utf-8"))
+
+        by_adapter = {stage["adapter"]: stage for stage in plan["stages"]}
+        opendde = by_adapter["opendde_v1"]["commands"][0]["argv"]
+        self.assertEqual(opendde[opendde.index("--dtype") + 1], "bf16")
+        self.assertEqual(opendde[opendde.index("--step") + 1], "2")
+        self.assertEqual(opendde[opendde.index("--cycle") + 1], "1")
+
+        protenix = by_adapter["protenix-v2"]["commands"][0]["argv"]
+        self.assertNotIn("--step", protenix)
+        self.assertNotIn("--cycle", protenix)
 
     def test_input_quiver_dry_run_defers_parent_dependent_stages(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -228,6 +287,34 @@ class PipelineTest(unittest.TestCase):
                 state["status_history"],
                 ["pending", "running", "failed", "pending", "running", "complete"],
             )
+            self.assertGreaterEqual(state["elapsed_seconds"], 0)
+
+    def test_job_states_distinguish_resource_and_external_asset_blocks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store = JobStore(root, resume=False)
+            oom = ExternalCommand(
+                (
+                    sys.executable,
+                    "-c",
+                    "import sys; print('CUDA out of memory', file=sys.stderr); raise SystemExit(1)",
+                ),
+                ready=True,
+            )
+            self.assertFalse(store.execute("oom", oom, (str(root / "never"),)))
+            oom_state = json.loads((root / "logs/jobs/oom.json").read_text())
+            self.assertEqual(oom_state["status"], "resource_blocked")
+
+            missing = ExternalCommand(
+                ("protenix",),
+                ready=False,
+                missing=("explicit Protenix-v2 checkpoint: /missing/protenix-v2.pt",),
+            )
+            self.assertFalse(store.execute("protenix", missing, ()))
+            missing_state = json.loads(
+                (root / "logs/jobs/protenix.json").read_text()
+            )
+            self.assertEqual(missing_state["status"], "external_asset_blocked")
 
     def test_geometry_is_observational_and_uses_angstroms(self):
         parent = Parent(

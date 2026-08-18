@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 from collections import defaultdict
@@ -19,6 +20,16 @@ from .schemas import (
 
 class PreparationError(ValueError):
     pass
+
+
+def _executable_environment(executable: str) -> dict[str, str]:
+    environment = dict(os.environ)
+    executable_path = Path(executable)
+    if executable_path.is_absolute():
+        environment["PATH"] = os.pathsep.join(
+            (str(executable_path.parent), environment.get("PATH", ""))
+        ).rstrip(os.pathsep)
+    return environment
 
 
 def _relative_parent_record(parent: Parent, output_dir: Path) -> dict:
@@ -366,7 +377,13 @@ def prepare_parent(
             "-o", str(numbering_output),
             "--restrict", "heavy", "light",
         ]
-        completed = subprocess.run(command, capture_output=True, text=True, check=False)
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            check=False,
+            env=_executable_environment(config.numbering.executable),
+        )
         (prepared_dir / "anarci.log").write_text(
             completed.stdout + completed.stderr, encoding="utf-8"
         )
